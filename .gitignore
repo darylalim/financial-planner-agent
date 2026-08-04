@@ -1,0 +1,33 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# Secrets
+.env
+.streamlit/secrets.toml
+
+# The agent's working directory — user financial documents live here.
+# Never commit these.
+#
+# The path must be spelled in full: a pattern containing a slash is anchored to
+# the directory holding this .gitignore, so a bare "workspace/*" would only
+# match a top-level workspace/ and would silently fail to cover this one.
+agent_home/workspace/*
+!agent_home/workspace/.gitkeep
+
+# The household profile the agent maintains. It accumulates income, balances,
+# goals and account details, so it is personal data despite living beside the
+# committed skills. Recreated from a template on first run.
+agent_home/AGENTS.md
+
+# Persisted cross-session memory (SQLite store/checkpointer)
+*.sqlite
+*.sqlite3
+*.db
+
+.DS_Store
