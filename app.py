@@ -15,8 +15,6 @@ Two pieces of state matter here and they live in different places:
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import streamlit as st
 
 from financial_planner.agent import build_agent, build_checkpointer
@@ -28,6 +26,7 @@ from financial_planner.config import (
 )
 from financial_planner.rendering import escape_dollars
 from financial_planner.streaming import Token, ToolEnd, ToolStart, stream_agent_events
+from financial_planner.uploads import save_uploads
 
 UPLOAD_TYPES = ["csv", "xlsx", "xls", "pdf"]
 
@@ -84,28 +83,20 @@ def load_agent(model_name: str):
     return build_agent(model=model_name, checkpointer=build_checkpointer())
 
 
-def save_uploads(files) -> list[str]:
-    """Write uploaded files into the agent's workspace.
-
-    Filenames come from the browser and are untrusted, so only the final path
-    component is used -- an upload named ``../../.env`` must not escape.
-    """
-    saved: list[str] = []
-    for item in files:
-        safe_name = Path(item.name).name
-        if not safe_name or safe_name in (".", ".."):
-            continue
-        destination = WORKSPACE_DIR / safe_name
-        destination.write_bytes(item.getvalue())
-        saved.append(safe_name)
-    return saved
-
-
 def new_thread_id() -> str:
-    """Mint a thread id. Time-based so threads sort chronologically."""
-    import datetime as _dt
+    """Mint a thread id. Time-prefixed so threads sort chronologically.
 
-    return f"session-{_dt.datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    The random suffix is not decoration. Seconds-only ids collide when "New
+    conversation" is clicked twice quickly, and a collision silently resumes
+    the previous thread: the transcript looks empty because that lives in
+    session_state, while the checkpointer -- keyed by thread id -- hands the
+    agent the whole prior conversation back.
+    """
+    import datetime as _dt
+    import uuid as _uuid
+
+    stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    return f"session-{stamp}-{_uuid.uuid4().hex[:8]}"
 
 
 # --- Fast UI first ----------------------------------------------------------
@@ -164,11 +155,14 @@ for message in st.session_state.messages:
         st.markdown(escape_dollars(message["content"]))
 
 # Onboarding chips, shown only on an empty conversation.
+#
+# The selection is used directly rather than stashed in session_state and
+# replayed after a st.rerun(). That round trip deadlocks: st.rerun() aborts the
+# script before the stash can be read, and on the next run the pills widget
+# still holds the same selection, so it stashes and reruns again forever.
+picked: str | None = None
 if not st.session_state.messages:
     picked = st.pills("Try asking:", list(SUGGESTIONS), label_visibility="collapsed")
-    if picked:
-        st.session_state.pending_prompt = SUGGESTIONS[picked]
-        st.rerun()
 
 prompt = st.chat_input(
     "Ask about your finances, or attach a statement",
@@ -177,18 +171,15 @@ prompt = st.chat_input(
     submit_mode="disable",
 )
 
-# A suggestion chip queues its prompt for the next run.
-pending = st.session_state.pop("pending_prompt", None)
-
 user_text: str | None = None
 uploaded_names: list[str] = []
 
-if pending:
-    user_text = pending
+if picked:
+    user_text = SUGGESTIONS[picked]
 elif prompt:
     user_text = (prompt.text or "").strip() or None
     if prompt.files:
-        uploaded_names = save_uploads(prompt.files)
+        uploaded_names = save_uploads(prompt.files, WORKSPACE_DIR)
 
 if user_text or uploaded_names:
     # Tell the agent where the files landed; it cannot see the upload widget.
@@ -202,6 +193,7 @@ if user_text or uploaded_names:
     with st.chat_message("user"):
         st.markdown(escape_dollars(user_text))
 
+    completed = False
     with st.chat_message("assistant"):
         activity = st.status("Thinking", expanded=False)
         answer_slot = st.empty()
@@ -241,9 +233,19 @@ if user_text or uploaded_names:
                 answer_slot.markdown(answer)
 
             st.session_state.messages.append({"role": "assistant", "content": answer})
+            completed = True
 
         except Exception as exc:  # noqa: BLE001 - surface any failure in the UI
             activity.update(label="Failed", state="error")
             st.error(f"{type(exc).__name__}: {exc}", icon=":material/error:")
             # Do not persist a failed turn to the transcript; the checkpointer
             # already holds whatever partial state the graph committed.
+
+    if completed:
+        # Redraw once the turn is done. The sidebar's document list and the
+        # onboarding chips were both rendered from pre-turn state, so without
+        # this a statement uploaded this turn stays invisible in the sidebar
+        # even after the agent has read it. Safe from looping: on the redraw
+        # the chat input is empty and the transcript is non-empty, so nothing
+        # re-enters this block.
+        st.rerun()

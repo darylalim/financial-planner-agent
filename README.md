@@ -30,6 +30,7 @@ Then attach a CSV/XLSX/PDF statement in the chat box, or try
 | `src/financial_planner/agent.py` | Assembles the deep agent: model, tools, prompt, backend. |
 | `src/financial_planner/streaming.py` | Translates LangGraph stream events into UI events. |
 | `src/financial_planner/rendering.py` | Markdown prep for Streamlit (see "Dollar signs are LaTeX"). |
+| `src/financial_planner/uploads.py` | Untrusted upload names → safe, non-colliding workspace paths. |
 | `agent_home/` | The agent's entire filesystem view (see below). |
 | `app.py` | Streamlit chat UI. |
 
@@ -155,7 +156,7 @@ rows, and returning them raw would crowd out the rest of the session.
 ## Development
 
 ```bash
-uv run pytest          # 105 tests, no API key or network required
+uv run pytest          # 140 tests, no API key or network required
 uv run ruff check .
 uv run ruff format .
 ```

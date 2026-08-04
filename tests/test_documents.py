@@ -219,3 +219,125 @@ class TestDerivedRatios:
             category_column="Category",
         )
         assert "Paycheck" not in json.dumps(result)
+
+
+class TestMonthlyAveragesFoundByReview:
+    """Both bugs here produced plausible numbers that fed straight into a budget
+    and, through the retirement skill, into retirement spending estimates.
+    """
+
+    def test_a_gap_month_does_not_inflate_the_average(self):
+        """Denominator is the calendar span, not the count of active months.
+
+        January and March at $1,200 each is $800/month over the quarter, not
+        $1,200 -- February had no activity but it still happened.
+        """
+        ensure_directories()
+        path = WORKSPACE_DIR / "_pytest-gap.csv"
+        path.write_text(
+            "Date,Amount\n2026-01-10,-1200.00\n2026-03-10,-1200.00\n",
+            encoding="utf-8",
+        )
+        try:
+            result = _call(
+                summarize_spending,
+                path="/workspace/_pytest-gap.csv",
+                amount_column="Amount",
+                date_column="Date",
+            )
+            assert result["months_covered"] == 3
+            assert result["average_monthly_outflow"] == pytest.approx(800.00)
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_undated_rows_do_not_inflate_the_average(self):
+        """Averages and by_month must agree; they are read from one payload."""
+        ensure_directories()
+        path = WORKSPACE_DIR / "_pytest-undated.csv"
+        path.write_text(
+            "Date,Amount\n2026-01-03,3000.00\nUNKNOWN,3000.00\n2026-01-10,-1000.00\n",
+            encoding="utf-8",
+        )
+        try:
+            result = _call(
+                summarize_spending,
+                path="/workspace/_pytest-undated.csv",
+                amount_column="Amount",
+                date_column="Date",
+            )
+            # The total keeps every parseable amount...
+            assert result["total_inflow"] == pytest.approx(6_000.00)
+            # ...but the average must match what by_month actually shows.
+            assert result["average_monthly_inflow"] == pytest.approx(3_000.00)
+            assert result["by_month"]["2026-01"]["inflow"] == pytest.approx(3_000.00)
+            assert result["undated_transactions"] == 1
+            assert "averages_basis" in result
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_no_undated_note_when_every_row_has_a_date(self, sample_csv):
+        result = _call(
+            summarize_spending, path=sample_csv, amount_column="Amount", date_column="Date"
+        )
+        assert "undated_transactions" not in result
+        assert "averages_basis" not in result
+
+    def test_category_monthly_average_uses_the_same_span(self):
+        ensure_directories()
+        path = WORKSPACE_DIR / "_pytest-catgap.csv"
+        path.write_text(
+            "Date,Category,Amount\n2026-01-10,Rent,-900.00\n2026-03-10,Rent,-900.00\n",
+            encoding="utf-8",
+        )
+        try:
+            result = _call(
+                summarize_spending,
+                path="/workspace/_pytest-catgap.csv",
+                amount_column="Amount",
+                category_column="Category",
+                date_column="Date",
+            )
+            assert result["by_category_monthly_average"]["Rent"] == pytest.approx(600.00)
+        finally:
+            path.unlink(missing_ok=True)
+
+
+class TestPdfPageRange:
+    """A backwards range used to return an empty success envelope, which reads
+    to the agent as "these pages are blank" rather than "fix your arguments".
+    """
+
+    @pytest.fixture
+    def blank_pdf(self):
+        from pypdf import PdfWriter
+
+        ensure_directories()
+        path = WORKSPACE_DIR / "_pytest-doc.pdf"
+        writer = PdfWriter()
+        for _ in range(10):
+            writer.add_blank_page(width=200, height=200)
+        with path.open("wb") as handle:
+            writer.write(handle)
+        yield "/workspace/_pytest-doc.pdf"
+        path.unlink(missing_ok=True)
+
+    def test_end_before_start_is_an_error_not_empty_text(self, blank_pdf):
+        from financial_planner.tools.documents import read_pdf_text
+
+        result = _call(read_pdf_text, path=blank_pdf, start_page=5, end_page=2)
+        assert "error" in result
+        assert "before start_page" in result["error"]
+
+    def test_start_beyond_the_document_is_still_an_error(self, blank_pdf):
+        from financial_planner.tools.documents import read_pdf_text
+
+        result = _call(read_pdf_text, path=blank_pdf, start_page=99)
+        assert "exceeds page count" in result["error"]
+
+    def test_a_valid_range_succeeds(self, blank_pdf):
+        from financial_planner.tools.documents import read_pdf_text
+
+        result = _call(read_pdf_text, path=blank_pdf, start_page=2, end_page=4)
+        assert "error" not in result
+        assert result["pages_read"] == "2-4"
+        assert result["page_count"] == 10

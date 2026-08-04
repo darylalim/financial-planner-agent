@@ -239,3 +239,31 @@ class TestWithdrawalSustainability:
             portfolio_value=1_000_000, annual_withdrawal=40_000, years=30, annual_return=0.06
         )
         assert "sequence-of-returns" in result["caveat"]
+
+
+class TestGuardsFoundByReview:
+    """Edge cases that passed validation and then divided by zero."""
+
+    def test_real_rate_rejects_total_deflation(self):
+        """_check_rate permits the closed interval [-1, 1]; -1 divides by zero."""
+        with pytest.raises(ValueError, match="cannot be -1.0"):
+            real_rate(0.07, -1.0)
+
+    def test_real_rate_still_accepts_ordinary_deflation(self):
+        assert real_rate(0.07, -0.01) == pytest.approx((1.07 / 0.99) - 1.0)
+
+    @pytest.mark.parametrize("years", [0.01, 0.03, 0.04])
+    def test_amortize_loan_rejects_sub_month_terms(self, years):
+        """years is a float, so 0 < years <= 100 does not imply months >= 1."""
+        with pytest.raises(ValueError, match="at least one month"):
+            amortize_loan(principal=5_000, apr=0.06, years=years)
+
+    def test_amortize_loan_accepts_exactly_one_month(self):
+        result = amortize_loan(principal=5_000, apr=0.06, years=1 / 12)
+        assert result.months == 1
+        assert result.monthly_payment == pytest.approx(5_025.0, abs=0.01)
+
+    def test_amortize_loan_rejects_sub_month_at_zero_apr_too(self):
+        """The zero-rate branch divides by the month count as well."""
+        with pytest.raises(ValueError, match="at least one month"):
+            amortize_loan(principal=5_000, apr=0.0, years=0.02)

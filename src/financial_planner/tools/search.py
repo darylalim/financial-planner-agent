@@ -15,7 +15,11 @@ from typing import Any
 
 from langchain.tools import tool
 
-from financial_planner.config import TAVILY_API_KEY
+# Imported as a module, not `from ... import TAVILY_API_KEY`: a by-value import
+# freezes the key at import time, so a later credential change -- or a test
+# monkeypatching it -- would never be seen. config.missing_required_keys()
+# reads its module global for the same reason.
+from financial_planner import config
 
 MAX_RESULTS = 5
 SNIPPET_CHARS = 700
@@ -60,7 +64,7 @@ def search_web(query: str, authoritative_only: bool = False) -> str:
         JSON with an answer summary and up to 5 results, each with title, url
         and a trimmed content snippet. Always cite the URL when you use a result.
     """
-    if not TAVILY_API_KEY:
+    if not config.TAVILY_API_KEY:
         return _err(
             "Web search is unavailable: TAVILY_API_KEY is not set. Tell the user "
             "that time-sensitive figures cannot be verified right now, and do "
@@ -70,7 +74,7 @@ def search_web(query: str, authoritative_only: bool = False) -> str:
     try:
         from tavily import TavilyClient
 
-        client = TavilyClient(api_key=TAVILY_API_KEY)
+        client = TavilyClient(api_key=config.TAVILY_API_KEY)
         kwargs: dict[str, Any] = {
             "query": query,
             "max_results": MAX_RESULTS,

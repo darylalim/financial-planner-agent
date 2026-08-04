@@ -167,7 +167,15 @@ def _events_for_message(message: Any, seen: set[str]) -> Iterator[StreamEvent]:
         yield ToolStart(name=call.get("name", "tool"), args=call.get("args") or {})
 
     # A ToolMessage carries tool_call_id; ordinary AI messages do not.
-    if getattr(message, "tool_call_id", None) is not None:
+    call_id = getattr(message, "tool_call_id", None)
+    if call_id is not None:
+        # Deduped like ToolStart above: the updates stream can resurface the
+        # same message, and a repeated ToolEnd writes the failure notice into
+        # the UI twice for one failure.
+        end_key = f"end:{call_id}"
+        if end_key in seen:
+            return
+        seen.add(end_key)
         yield ToolEnd(
             name=getattr(message, "name", None) or "tool",
             ok=not _is_error_result(getattr(message, "content", "")),

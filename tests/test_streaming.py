@@ -334,3 +334,38 @@ class TestAgainstRealAgent:
         config = {"configurable": {"thread_id": str(uuid.uuid4())}, "recursion_limit": 10}
         events = list(stream_agent_events(agent, [{"role": "user", "content": "hello"}], config))
         assert _text(events) == "Projection ready."
+
+
+class TestToolEndIsDeduped:
+    """The updates stream can resurface the same message. ToolStart already
+    deduped by call id; ToolEnd did not, so one failure was reported twice.
+    """
+
+    RESULT = ToolMessage(
+        content='{"error":"years must be in (0, 100]"}',
+        tool_call_id="call_1",
+        name="project_savings",
+    )
+
+    def test_a_resurfaced_tool_message_yields_one_end(self):
+        script = [
+            ("updates", {"tools": {"messages": [self.RESULT]}}),
+            ("updates", {"tools": {"messages": [self.RESULT]}}),
+        ]
+        assert len([e for e in _events(script) if isinstance(e, ToolEnd)]) == 1
+
+    def test_distinct_calls_still_each_report(self):
+        other = ToolMessage(content="{}", tool_call_id="call_2", name="get_quote")
+        script = [("updates", {"tools": {"messages": [self.RESULT, other]}})]
+        ends = [e for e in _events(script) if isinstance(e, ToolEnd)]
+        assert {e.name for e in ends} == {"project_savings", "get_quote"}
+
+    def test_dedupe_does_not_suppress_a_start_on_the_same_id(self):
+        """ToolStart and ToolEnd share the `seen` set; the keys must not clash."""
+        call = _tool_call("project_savings", {"years": 20}, "call_1")
+        script = [
+            ("updates", {"model": {"messages": [call]}}),
+            ("updates", {"tools": {"messages": [self.RESULT]}}),
+        ]
+        kinds = [type(e).__name__ for e in _events(script)]
+        assert kinds == ["ToolStart", "ToolEnd"]

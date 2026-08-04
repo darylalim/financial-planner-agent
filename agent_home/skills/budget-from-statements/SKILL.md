@@ -50,10 +50,15 @@ the payment.
 
 ### 4. Build the picture
 
-- Monthly income (average across the period covered)
-- Monthly spending by category, largest first
-- Savings rate: (income − spending) / income
+- Monthly income — the `average_monthly_inflow` field
+- Monthly spending by category — `by_category_monthly_average`, largest first
+- Savings rate — the `savings_rate` field
 - Fixed versus discretionary, when categories permit
+
+`summarize_spending` returns every one of those figures already computed. Report
+what it returns; do not divide its totals yourself. Check `months_covered` and
+`period` before calling an average typical, and mention `undated_transactions`
+if it appears — those rows are in the totals but not in the averages.
 
 Flag anything that materially affects planning: a category consuming an unusual
 share, subscriptions in aggregate, an interest charge implying a revolving

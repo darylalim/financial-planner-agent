@@ -164,7 +164,16 @@ def get_historical_return(ticker: str, years: int = 10) -> str:
 
         closes = hist["Close"].dropna()
         start, end = float(closes.iloc[0]), float(closes.iloc[-1])
-        span_years = len(closes) / TRADING_DAYS
+
+        # Annualize over elapsed calendar time, not the number of bars. Row
+        # count only equals time if the series has exactly TRADING_DAYS bars a
+        # year -- untrue after a trading halt, for a non-US calendar, or for any
+        # non-daily series, and the resulting CAGR error is then fed straight
+        # into a multi-decade projection as an annual_return assumption.
+        elapsed_days = (closes.index[-1] - closes.index[0]).days
+        span_years = elapsed_days / 365.25
+        if span_years <= 0:
+            raise ValueError(f"price history for {sym!r} spans no measurable time")
         total_return = end / start - 1.0
         cagr = (end / start) ** (1.0 / span_years) - 1.0
         volatility = float(closes.pct_change().dropna().std() * (TRADING_DAYS**0.5))

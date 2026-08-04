@@ -177,7 +177,6 @@ def summarize_spending(
         if inflow > 0:
             result["savings_rate"] = round((inflow - outflow) / inflow, 4)
 
-        by_cat: dict[str, float] = {}
         if category_column:
             if category_column not in df.columns:
                 return _err(
@@ -204,7 +203,6 @@ def summarize_spending(
             dates = pd.to_datetime(df[date_column], errors="coerce")
             dated = df.assign(_month=dates.dt.to_period("M")).dropna(subset=["_month"])
             months = sorted(dated["_month"].unique())
-            months_covered = len(months)
 
             per_month: dict[str, dict[str, float]] = {}
             for month in months:
@@ -218,21 +216,46 @@ def summarize_spending(
                 }
             result["by_month"] = per_month
 
-            if months_covered:
+            if months:
+                first, last = months[0], months[-1]
+                # Span the calendar, do not count months that happen to contain
+                # a transaction. A quarterly export, or a month with no
+                # activity, would otherwise divide by a smaller number and
+                # overstate every average -- Jan + Mar of $1,200 each reads as
+                # $1,200/month rather than the true $800.
+                months_covered = (last.year - first.year) * 12 + (last.month - first.month) + 1
+
+                # Average over the dated rows only. The totals above cover every
+                # amount-parseable row, so using them here against a denominator
+                # derived from dated rows would make the payload contradict its
+                # own by_month breakdown.
+                dated_out = float(-dated.loc[dated["_amount"] < 0, "_amount"].sum())
+                dated_in = float(dated.loc[dated["_amount"] > 0, "_amount"].sum())
+
+                result["months_covered"] = months_covered
                 # First and last months are frequently partial exports, which
                 # skews every average below. Surfacing the span lets the agent
                 # say so instead of presenting a partial month as typical.
-                result["months_covered"] = months_covered
                 result["period"] = {
                     "first_transaction": str(dates.min().date()),
                     "last_transaction": str(dates.max().date()),
                 }
-                result["average_monthly_inflow"] = round(inflow / months_covered, 2)
-                result["average_monthly_outflow"] = round(outflow / months_covered, 2)
-                result["average_monthly_net"] = round((inflow - outflow) / months_covered, 2)
-                if by_cat:
+                undated = int(len(df) - len(dated))
+                if undated:
+                    result["undated_transactions"] = undated
+                    result["averages_basis"] = (
+                        f"{undated} transaction(s) had no parseable date and are "
+                        "excluded from the monthly averages but included in the totals"
+                    )
+                result["average_monthly_inflow"] = round(dated_in / months_covered, 2)
+                result["average_monthly_outflow"] = round(dated_out / months_covered, 2)
+                result["average_monthly_net"] = round((dated_in - dated_out) / months_covered, 2)
+                if category_column:
+                    dated_spend = dated[dated["_amount"] < 0]
+                    dated_by_cat = -dated_spend.groupby(category_column)["_amount"].sum()
                     result["by_category_monthly_average"] = {
-                        k: round(v / months_covered, 2) for k, v in by_cat.items()
+                        str(k): round(float(v) / months_covered, 2)
+                        for k, v in dated_by_cat.sort_values(ascending=False).items()
                     }
 
         return _ok(result)
@@ -270,6 +293,16 @@ def read_pdf_text(path: str, start_page: int = 1, end_page: int | None = None) -
         last = min(total, end_page if end_page is not None else first + 4)
         if first > total:
             return _err(ValueError(f"start_page {first} exceeds page count {total}"))
+        if last < first:
+            # Otherwise range(first, last + 1) is empty and this returns a
+            # success envelope with no text, which reads to the agent as "these
+            # pages are blank" rather than "your page range was backwards".
+            return _err(
+                ValueError(
+                    f"end_page {end_page} is before start_page {first}; "
+                    f"this PDF has {total} page(s)"
+                )
+            )
 
         chunks = [reader.pages[i - 1].extract_text() or "" for i in range(first, last + 1)]
         text = "\n\n".join(chunks)

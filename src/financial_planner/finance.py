@@ -96,6 +96,10 @@ def real_rate(nominal_rate: float, inflation_rate: float) -> float:
     """
     _check_rate("nominal_rate", nominal_rate)
     _check_rate("inflation_rate", inflation_rate)
+    # _check_rate permits the closed interval [-1, 1], and -1 would divide by
+    # zero here. Total price collapse is not a scenario this models anyway.
+    if inflation_rate == -1.0:
+        raise ValueError("inflation_rate cannot be -1.0 (total deflation); use decimals like 0.025")
     return (1.0 + nominal_rate) / (1.0 + inflation_rate) - 1.0
 
 
@@ -238,6 +242,10 @@ def amortize_loan(*, principal: float, apr: float, years: float) -> Amortization
         raise ValueError(f"years must be in (0, {_MAX_YEARS}], got {years}")
 
     n = int(round(years * 12))
+    if n < 1:
+        # ``years`` is a float here, so sub-month terms reach this point having
+        # passed the 0 < years check and would divide by a zero month count.
+        raise ValueError(f"years must cover at least one month (>= 1/12), got {years}")
     r = apr_monthly_rate(apr)
     if r == 0:
         payment = principal / n
@@ -369,7 +377,10 @@ def payoff_debts(
             if d.balance == 0.0 and not any(o["name"] == d.name for o in order):
                 order.append({"name": d.name, "paid_off_month": month})
 
-    if month >= _MAX_MONTHS:
+    # Test the balances, not the counter. A plan whose final payment lands
+    # exactly on month _MAX_MONTHS has cleared, and reporting it as impossible
+    # would tell the user a workable plan cannot work.
+    if any(d.balance > 0.005 for d in working):
         raise ValueError(
             "debts do not amortize within 100 years at this budget -- interest "
             "is outpacing payments. Increase the budget or reduce the rates."
