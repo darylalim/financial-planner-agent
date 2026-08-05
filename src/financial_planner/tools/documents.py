@@ -18,7 +18,6 @@ columns it produces rather than testing the raw amount's sign.
 
 from __future__ import annotations
 
-import json
 import warnings
 from pathlib import Path
 from typing import Any
@@ -28,6 +27,7 @@ from langchain.tools import tool
 from pypdf import PdfReader
 
 from financial_planner.config import AGENT_HOME
+from financial_planner.envelope import err, ok
 
 MAX_PREVIEW_ROWS = 5
 MAX_PDF_CHARS = 20_000
@@ -66,14 +66,6 @@ def _resolve(virtual_path: str) -> Path:
             f"path {virtual_path!r} resolves outside the agent's root directory"
         )
     return candidate
-
-
-def _ok(payload: dict[str, Any]) -> str:
-    return json.dumps(payload, separators=(",", ":"), default=str)
-
-
-def _err(exc: Exception) -> str:
-    return json.dumps({"error": f"{type(exc).__name__}: {exc}"})
 
 
 def _load_table(path: Path) -> pd.DataFrame:
@@ -268,12 +260,12 @@ def inspect_document(path: str) -> str:
     try:
         resolved = _resolve(path)
         if not resolved.exists():
-            return _err(FileNotFoundError(f"{path} does not exist. List /workspace/ first."))
+            return err(FileNotFoundError(f"{path} does not exist. List /workspace/ first."))
 
         if resolved.suffix.lower() == ".pdf":
             reader = PdfReader(resolved)
             first = (reader.pages[0].extract_text() or "") if reader.pages else ""
-            return _ok(
+            return ok(
                 {
                     "path": path,
                     "type": "pdf",
@@ -283,7 +275,7 @@ def inspect_document(path: str) -> str:
             )
 
         df = _load_table(resolved)
-        return _ok(
+        return ok(
             {
                 "path": path,
                 "type": "table",
@@ -293,7 +285,7 @@ def inspect_document(path: str) -> str:
             }
         )
     except Exception as exc:  # noqa: BLE001
-        return _err(exc)
+        return err(exc)
 
 
 @tool
@@ -364,7 +356,7 @@ def summarize_spending(
             ("date_column", date_column),
         ):
             if column is not None and column not in df.columns:
-                return _err(
+                return err(
                     ValueError(f"{label} {column!r} not found. Available: {list(df.columns)}")
                 )
 
@@ -430,7 +422,7 @@ def summarize_spending(
             # 1970-01-01 -- every row lands in one month and the monthly
             # averages quietly become the whole-file totals.
             if pd.api.types.is_numeric_dtype(df[date_column]):
-                return _err(
+                return err(
                     ValueError(
                         f"date_column {date_column!r} holds numbers, not dates. Numbers "
                         "parse as epoch offsets and would put every transaction in "
@@ -452,7 +444,7 @@ def summarize_spending(
                 # Otherwise by_month comes back empty and every monthly average
                 # is silently missing, which reads as "no monthly pattern"
                 # rather than "this column was not dates".
-                return _err(ValueError(f"column {date_column!r} contains no parseable dates"))
+                return err(ValueError(f"column {date_column!r} contains no parseable dates"))
             dated = df.assign(_month=dates.dt.to_period("M")).dropna(subset=["_month"])
             months = sorted(dated["_month"].unique())
 
@@ -510,9 +502,9 @@ def summarize_spending(
                         for k, v in dated_by_cat.sort_values(ascending=False).items()
                     }
 
-        return _ok(result)
+        return ok(result)
     except Exception as exc:  # noqa: BLE001
-        return _err(exc)
+        return err(exc)
 
 
 @tool
@@ -544,12 +536,12 @@ def read_pdf_text(path: str, start_page: int = 1, end_page: int | None = None) -
         first = max(1, start_page)
         last = min(total, end_page if end_page is not None else first + 4)
         if first > total:
-            return _err(ValueError(f"start_page {first} exceeds page count {total}"))
+            return err(ValueError(f"start_page {first} exceeds page count {total}"))
         if last < first:
             # Otherwise range(first, last + 1) is empty and this returns a
             # success envelope with no text, which reads to the agent as "these
             # pages are blank" rather than "your page range was backwards".
-            return _err(
+            return err(
                 ValueError(
                     f"end_page {end_page} is before start_page {first}; "
                     f"this PDF has {total} page(s)"
@@ -560,7 +552,7 @@ def read_pdf_text(path: str, start_page: int = 1, end_page: int | None = None) -
         text = "\n\n".join(chunks)
         truncated = len(text) > MAX_PDF_CHARS
 
-        return _ok(
+        return ok(
             {
                 "path": path,
                 "pages_read": f"{first}-{last}",
@@ -570,7 +562,7 @@ def read_pdf_text(path: str, start_page: int = 1, end_page: int | None = None) -
             }
         )
     except Exception as exc:  # noqa: BLE001
-        return _err(exc)
+        return err(exc)
 
 
 DOCUMENT_TOOLS = [inspect_document, summarize_spending, read_pdf_text]

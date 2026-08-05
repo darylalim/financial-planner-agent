@@ -10,7 +10,6 @@ excerpts that would crowd out the rest of the session for little gain.
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from langchain.tools import tool
@@ -20,6 +19,7 @@ from langchain.tools import tool
 # monkeypatching it -- would never be seen. config.missing_required_keys()
 # reads its module global for the same reason.
 from financial_planner import config
+from financial_planner.envelope import err, ok
 
 MAX_RESULTS = 5
 SNIPPET_CHARS = 700
@@ -35,22 +35,6 @@ AUTHORITATIVE_DOMAINS = [
     "investor.gov",
     "bls.gov",
 ]
-
-
-def _err(message: str) -> str:
-    return json.dumps({"error": message})
-
-
-def _redact(message: str) -> str:
-    """Strip the API key out of anything headed for the model's context.
-
-    Upstream exception text is relayed verbatim so the model can act on it, and
-    HTTP clients routinely quote the failing request back. This reply lands in
-    the model's context and in the saved transcript, so a key echoed here
-    outlives the error that produced it.
-    """
-    key = config.TAVILY_API_KEY
-    return message.replace(key, "***") if key else message
 
 
 @tool
@@ -77,7 +61,7 @@ def search_web(query: str, authoritative_only: bool = False) -> str:
         and a trimmed content snippet. Always cite the URL when you use a result.
     """
     if not config.TAVILY_API_KEY:
-        return _err(
+        return err(
             "Web search is unavailable: TAVILY_API_KEY is not set. Tell the user "
             "that time-sensitive figures cannot be verified right now, and do "
             "not state current-year tax or contribution limits from memory."
@@ -98,7 +82,7 @@ def search_web(query: str, authoritative_only: bool = False) -> str:
 
         raw = client.search(**kwargs)
 
-        return json.dumps(
+        return ok(
             {
                 "query": query,
                 "answer": raw.get("answer"),
@@ -110,12 +94,10 @@ def search_web(query: str, authoritative_only: bool = False) -> str:
                     }
                     for r in (raw.get("results") or [])[:MAX_RESULTS]
                 ],
-            },
-            separators=(",", ":"),
-            default=str,
+            }
         )
     except Exception as exc:  # noqa: BLE001
-        return _err(_redact(f"{type(exc).__name__}: {exc}"))
+        return err(exc)
 
 
 SEARCH_TOOLS = [search_web]

@@ -11,20 +11,10 @@ read the problem, correct the arguments, and retry.
 
 from __future__ import annotations
 
-import json
-from typing import Any
-
 from langchain.tools import tool
 
 from financial_planner import finance
-
-
-def _ok(payload: dict[str, Any]) -> str:
-    return json.dumps(payload, separators=(",", ":"))
-
-
-def _err(exc: Exception) -> str:
-    return json.dumps({"error": str(exc)})
+from financial_planner.envelope import err, ok
 
 
 @tool
@@ -57,7 +47,7 @@ def project_savings(
         total_growth, and a per-year balance series suitable for charting.
     """
     try:
-        return _ok(
+        return ok(
             finance.project_portfolio(
                 starting_balance=starting_balance,
                 monthly_contribution=monthly_contribution,
@@ -68,7 +58,7 @@ def project_savings(
             ).to_dict()
         )
     except Exception as exc:  # noqa: BLE001 - surfaced to the model for retry
-        return _err(exc)
+        return err(exc)
 
 
 @tool
@@ -100,9 +90,9 @@ def required_savings_rate(
             years=years,
             annual_return=annual_return,
         )
-        return _ok({"required_monthly_contribution": pmt})
+        return ok({"required_monthly_contribution": pmt})
     except Exception as exc:  # noqa: BLE001
-        return _err(exc)
+        return err(exc)
 
 
 @tool
@@ -122,9 +112,9 @@ def loan_payment(principal: float, apr: float, years: float) -> str:
         JSON with monthly_payment, total_paid, total_interest, months.
     """
     try:
-        return _ok(finance.amortize_loan(principal=principal, apr=apr, years=years).to_dict())
+        return ok(finance.amortize_loan(principal=principal, apr=apr, years=years).to_dict())
     except Exception as exc:  # noqa: BLE001
-        return _err(exc)
+        return err(exc)
 
 
 @tool
@@ -152,13 +142,13 @@ def plan_debt_payoff(
         JSON with months_to_debt_free, total_interest_paid, and payoff_order.
     """
     try:
-        return _ok(
+        return ok(
             finance.payoff_debts(
                 debts=debts, monthly_budget=monthly_budget, strategy=strategy
             ).to_dict()
         )
     except Exception as exc:  # noqa: BLE001
-        return _err(exc)
+        return err(exc)
 
 
 @tool
@@ -191,7 +181,7 @@ def test_withdrawal_plan(
         initial_withdrawal_rate, a yearly path, and a caveat to relay.
     """
     try:
-        return _ok(
+        return ok(
             finance.withdrawal_sustainability(
                 portfolio_value=portfolio_value,
                 annual_withdrawal=annual_withdrawal,
@@ -201,7 +191,7 @@ def test_withdrawal_plan(
             )
         )
     except Exception as exc:  # noqa: BLE001
-        return _err(exc)
+        return err(exc)
 
 
 CALCULATOR_TOOLS = [

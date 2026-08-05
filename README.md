@@ -30,6 +30,7 @@ Then attach a CSV/XLSX/PDF statement in the chat box, or try
 | `src/financial_planner/agent.py` | Assembles the deep agent: model, tools, prompt, backend. |
 | `src/financial_planner/streaming.py` | Translates LangGraph stream events into UI events. |
 | `src/financial_planner/rendering.py` | Markdown prep for Streamlit (see "Dollar signs are LaTeX"). |
+| `src/financial_planner/envelope.py` | The JSON result envelope every tool returns, and its secret redaction. |
 | `src/financial_planner/uploads.py` | Untrusted upload names → safe, non-colliding workspace paths. |
 | `agent_home/` | The agent's entire filesystem view (see below). |
 | `app.py` | Streamlit chat UI. |
@@ -144,7 +145,7 @@ analysis goes wrong.
 | `read_pdf_text` | Extract a page range from a PDF |
 | `get_quote` | Current prices |
 | `get_fund_profile` | Expense ratio and category |
-| `get_historical_return` | Realized annualized return and volatility |
+| `get_historical_return` | Realized annualized return and volatility, both scaled by the series' own bar rate |
 | `search_web` | Current rates, limits and rules (Tavily) |
 
 Plus the Deep Agents built-ins: `write_todos`, `ls`, `read_file`, `write_file`,
@@ -163,6 +164,25 @@ fail open on a rename.
 
 Document tools **summarize rather than dump** — a year of transactions is 5,000+
 rows, and returning them raw would crowd out the rest of the session.
+
+### The result envelope
+
+Every tool returns JSON through `envelope.py` and returns errors rather than
+raising, so a bad argument lets the model read the problem and retry instead of
+ending the turn. Two things about it are behaviour, not formatting:
+
+- `streaming._is_error_result` decides whether the UI marks a call failed by
+  matching the *serialized* text against `{"error"`. Compact separators and
+  key order are load-bearing.
+- Everything it returns lands in the model's context and the saved transcript,
+  so `redact()` strips any configured API key first. Upstream exception text is
+  relayed verbatim — that is what makes it useful to the model — and HTTP
+  clients routinely quote the failing request back. `app.py` redacts the same
+  way when it surfaces an agent-level failure, which is where a model-client
+  error would appear.
+
+This lives in one module because four copies of it had already drifted: one
+omitted the exception type, and only one redacted anything.
 
 ### Sign conventions
 
@@ -199,7 +219,7 @@ on unrelated quantities.
 ## Development
 
 ```bash
-uv run pytest          # 258 tests, no API key or network required
+uv run pytest          # 283 tests, no API key or network required
 uv run ruff check .
 uv run ruff format .
 ```

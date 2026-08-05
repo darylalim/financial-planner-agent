@@ -21,7 +21,6 @@ import pytest
 from financial_planner.tools import market
 from financial_planner.tools.market import (
     MAX_TICKERS,
-    TRADING_DAYS,
     get_fund_profile,
     get_historical_return,
     get_quote,
@@ -214,13 +213,18 @@ class TestHistoricalReturn:
         assert result["annualized_return"] == pytest.approx(0.1487, abs=0.005)
         assert result["total_return"] == pytest.approx(1.0, abs=0.01)
 
-    def test_volatility_is_annualized_by_the_trading_day_factor(self, monkeypatch):
+    def test_volatility_is_annualized_by_the_series_own_bar_rate(self, monkeypatch):
         """A geometric series has zero variance, so it cannot test this.
 
-        The first version of this asserted `>= 0` against `price_history`, which
-        rises at a perfectly constant rate -- its per-bar return std is ~1e-16,
-        so the assertion held for any annualization factor, or for none at all.
-        This uses a series with real dispersion and pins the arithmetic.
+        The first version asserted `>= 0` against `price_history`, which rises
+        at a perfectly constant rate -- its per-bar return std is ~1e-16, so the
+        assertion held for any annualization factor, or for none at all.
+
+        The factor is derived from the bars this series actually contains per
+        year, the same basis the CAGR uses. A hardcoded sqrt(252) asserts daily
+        US trading bars: right for the common case, wrong by ~14.5x on the
+        annual bars below, in the direction that makes a portfolio look far more
+        volatile than it is.
         """
         closes = [100.0, 110.0, 99.0, 115.0, 104.0, 121.0]
         frame = pd.DataFrame(
@@ -229,10 +233,27 @@ class TestHistoricalReturn:
         )
         install(monkeypatch, lambda s: FakeTicker(s, history=frame))
 
-        expected = float(frame["Close"].pct_change().dropna().std() * TRADING_DAYS**0.5)
+        # Five annual bars: one return per year, so the annualization factor is 1.
+        per_bar_std = float(frame["Close"].pct_change().dropna().std())
         result = call(get_historical_return, ticker="VTI")
-        assert result["annualized_volatility"] == pytest.approx(round(expected, 4))
-        assert result["annualized_volatility"] > 0
+        assert result["annualized_volatility"] == pytest.approx(per_bar_std, abs=5e-4)
+        assert result["annualized_volatility"] < per_bar_std * 15  # what sqrt(252) would give
+
+    def test_daily_bars_still_annualize_by_roughly_the_trading_year(self, monkeypatch):
+        """The common case must not regress: ~252 bars a year is what the old
+        hardcoded factor got right, and the derived factor has to agree."""
+        import numpy as np
+
+        rng = np.random.default_rng(0)
+        n = 252 * 4
+        index = pd.to_datetime(pd.date_range("2020-01-01", periods=n, freq="B"))
+        closes = 100 * np.exp(np.cumsum(rng.normal(0, 0.01, n)))
+        frame = pd.DataFrame({"Close": closes}, index=index)
+        install(monkeypatch, lambda s: FakeTicker(s, history=frame))
+
+        per_bar_std = float(frame["Close"].pct_change().dropna().std())
+        result = call(get_historical_return, ticker="VTI")
+        assert result["annualized_volatility"] == pytest.approx(per_bar_std * 252**0.5, rel=0.02)
 
     def test_a_flat_series_reports_no_volatility(self, monkeypatch):
         flat = pd.DataFrame(

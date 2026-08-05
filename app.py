@@ -24,6 +24,7 @@ from financial_planner.config import (
     ensure_directories,
     missing_required_keys,
 )
+from financial_planner.envelope import redact
 from financial_planner.rendering import escape_dollars
 from financial_planner.streaming import Token, ToolEnd, ToolStart, stream_agent_events
 from financial_planner.uploads import save_uploads
@@ -240,7 +241,10 @@ if user_text or uploaded_names:
 
         except Exception as exc:  # noqa: BLE001 - surface any failure in the UI
             activity.update(label="Failed", state="error")
-            st.error(f"{type(exc).__name__}: {exc}", icon=":material/error:")
+            # Redacted for the same reason the tools redact: this is the one
+            # place a model-client error surfaces, and those quote the failing
+            # request. Streamlit renders it and it may be screenshotted.
+            st.error(redact(f"{type(exc).__name__}: {exc}"), icon=":material/error:")
             # Do not persist a failed turn to the transcript; the checkpointer
             # already holds whatever partial state the graph committed.
 

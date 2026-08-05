@@ -9,22 +9,14 @@ timing.
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 import yfinance as yf
 from langchain.tools import tool
 
+from financial_planner.envelope import err, ok
+
 MAX_TICKERS = 15
-TRADING_DAYS = 252
-
-
-def _ok(payload: dict[str, Any]) -> str:
-    return json.dumps(payload, separators=(",", ":"), default=str)
-
-
-def _err(exc: Exception) -> str:
-    return json.dumps({"error": f"{type(exc).__name__}: {exc}"})
 
 
 def _clean(tickers: list[str]) -> list[str]:
@@ -59,7 +51,7 @@ def get_quote(tickers: list[str]) -> str:
     try:
         symbols = _clean(tickers)
     except Exception as exc:  # noqa: BLE001
-        return _err(exc)
+        return err(exc)
 
     results: dict[str, Any] = {}
     for sym in symbols:
@@ -79,7 +71,7 @@ def get_quote(tickers: list[str]) -> str:
             }
         except Exception as exc:  # noqa: BLE001 - per-symbol isolation
             results[sym] = {"error": f"{type(exc).__name__}: {exc}"}
-    return _ok({"quotes": results})
+    return ok({"quotes": results})
 
 
 def _round(value: Any) -> float | None:
@@ -112,7 +104,7 @@ def get_fund_profile(ticker: str) -> str:
         expense = info.get("netExpenseRatio")
         if expense is None:
             expense = info.get("annualReportExpenseRatio")
-        return _ok(
+        return ok(
             {
                 "ticker": sym,
                 "name": info.get("longName") or info.get("shortName"),
@@ -130,7 +122,7 @@ def get_fund_profile(ticker: str) -> str:
             }
         )
     except Exception as exc:  # noqa: BLE001
-        return _err(exc)
+        return err(exc)
 
 
 @tool
@@ -166,7 +158,7 @@ def get_historical_return(ticker: str, years: int = 10) -> str:
         start, end = float(closes.iloc[0]), float(closes.iloc[-1])
 
         # Annualize over elapsed calendar time, not the number of bars. Row
-        # count only equals time if the series has exactly TRADING_DAYS bars a
+        # count only equals time if the series has exactly 252 bars a
         # year -- untrue after a trading halt, for a non-US calendar, or for any
         # non-daily series, and the resulting CAGR error is then fed straight
         # into a multi-decade projection as an annual_return assumption.
@@ -176,9 +168,19 @@ def get_historical_return(ticker: str, years: int = 10) -> str:
             raise ValueError(f"price history for {sym!r} spans no measurable time")
         total_return = end / start - 1.0
         cagr = (end / start) ** (1.0 / span_years) - 1.0
-        volatility = float(closes.pct_change().dropna().std() * (TRADING_DAYS**0.5))
 
-        return _ok(
+        # Scale by the bars this series actually contains per year, derived the
+        # same way the CAGR is. Multiplying by sqrt(252) instead asserted daily
+        # US trading bars: correct for the common case and wrong by a factor of
+        # ~4.6 on a weekly series and ~14.5 on a monthly one, in the direction
+        # that makes a portfolio look far more volatile than it is. The two
+        # figures in this payload were annualized on different bases, so they
+        # could not both be right for the same input.
+        returns = closes.pct_change().dropna()
+        periods_per_year = len(returns) / span_years
+        volatility = float(returns.std() * (periods_per_year**0.5))
+
+        return ok(
             {
                 "ticker": sym,
                 "years_covered": round(span_years, 2),
@@ -194,7 +196,7 @@ def get_historical_return(ticker: str, years: int = 10) -> str:
             }
         )
     except Exception as exc:  # noqa: BLE001
-        return _err(exc)
+        return err(exc)
 
 
 MARKET_TOOLS = [get_quote, get_fund_profile, get_historical_return]
