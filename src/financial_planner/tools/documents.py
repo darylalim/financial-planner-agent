@@ -19,6 +19,7 @@ columns it produces rather than testing the raw amount's sign.
 from __future__ import annotations
 
 import json
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +32,11 @@ from financial_planner.config import AGENT_HOME
 MAX_PREVIEW_ROWS = 5
 MAX_PDF_CHARS = 20_000
 
-SIGN_CONVENTIONS = ("auto", "negative_outflow", "positive_outflow", "split_columns")
+# Accepted arguments. "split_columns" is deliberately absent: it is a result,
+# selected by passing inflow_column. Accepting it as an argument let it fall
+# through to the positive_outflow branch and report a label the skill is told to
+# trust, inverting the budget.
+SIGN_CONVENTIONS = ("auto", "negative_outflow", "positive_outflow")
 
 UNCATEGORIZED = "Uncategorized"
 
@@ -98,44 +103,127 @@ def _category_labels(series: pd.Series) -> pd.Series:
     return labels.mask(labels.isna() | (labels == ""), UNCATEGORIZED)
 
 
+def _resolve_ambiguity(column: str, detail: str) -> AmbiguousSignConvention:
+    """Build the refusal, which has to tell the model exactly how to proceed."""
+    return AmbiguousSignConvention(
+        f"{detail} Check the preview rows from inspect_document, then call again "
+        "with sign_convention='positive_outflow' if the positive values in "
+        f"{column!r} are charges, or sign_convention='negative_outflow' if they "
+        "are deposits. If the file has separate debit and credit columns, pass "
+        "inflow_column instead."
+    )
+
+
+def _detect_convention(column: str, signed: pd.Series) -> str:
+    """Infer how a single signed column encodes direction, or refuse.
+
+    The sign alone decides nothing, because **both** layouts produce mixed
+    signs: a checking export is a few large deposits against many payments, and
+    a card export is many charges against a few payments. Only the degenerate
+    cases are actually provable, so this claims very little:
+
+    * No positive value at all -- every row is money out. The inverse reading
+      would make it pure income, which no transaction export is.
+    * Everything positive, or positives outnumbering negatives at least 3:1 --
+      the shape of a card statement, where a month of charges sits against one
+      or two payments. Refuses rather than reporting every charge as income.
+    * Anything else -- assumed to be the ordinary signed reading, and the
+      payload says so via ``sign_convention_inferred`` so the assumption is
+      visible rather than buried.
+
+    The 3:1 threshold is deliberately loose. It has to clear a checking export
+    with irregular income (a handful of deposits against a similar number of
+    payments) while still catching the card layout, which in a real statement
+    runs dozens of charges to one payment.
+    """
+    negatives = int((signed < 0).sum())
+    positives = int((signed > 0).sum())
+
+    if positives == 0:
+        return "negative_outflow"
+    if negatives == 0:
+        raise _resolve_ambiguity(
+            column,
+            f"Every value in {column!r} is positive, so spending and income cannot "
+            "be told apart by sign.",
+        )
+    if positives >= 3 * negatives:
+        raise _resolve_ambiguity(
+            column,
+            f"{column!r} holds {positives} positive values against {negatives} "
+            "negative, which is the shape of a card statement -- a month of "
+            "charges against one or two payments. Read as an ordinary signed "
+            "column it would report every charge as income.",
+        )
+    return "negative_outflow"
+
+
+def _parse_dates(series: pd.Series) -> tuple[pd.Series, bool]:
+    """Parse a date column, reporting whether pandas had to guess per element.
+
+    Deliberately not ``format="mixed"``. A single inferred format leaves rows
+    that do not match as NaT, which the ``undated_transactions`` machinery
+    already surfaces; parsing each element on its own instead lets one column be
+    read under two different day/month orders and files rows in the wrong month
+    with nothing to show for it. pandas still falls back to per-element parsing
+    on its own when it cannot infer anything, so the fallback is detected and
+    reported rather than left to run silently.
+    """
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", UserWarning)
+        parsed = pd.to_datetime(series, errors="coerce")
+    fell_back = any("parsed individually" in str(w.message) for w in caught)
+    return parsed, fell_back
+
+
 def _normalize_flows(
     df: pd.DataFrame,
     amount_column: str,
     inflow_column: str | None,
     sign_convention: str,
-) -> tuple[pd.DataFrame, str]:
+) -> tuple[pd.DataFrame, str, bool]:
     """Add non-negative ``_out``/``_in`` columns and report the convention used.
 
     Three layouts occur in real exports and they disagree about what a sign
     means:
 
-    * **split columns** -- separate debit and credit columns holding magnitudes,
+    * **split_columns** -- separate debit and credit columns holding magnitudes,
       common from Capital One and most European banks. Selected by passing
-      ``inflow_column``; nothing is inferred.
+      ``inflow_column``; nothing is inferred. It is a result, never an argument.
     * **negative_outflow** -- one signed column, money out is negative. Most
       checking exports, and Chase's card export.
     * **positive_outflow** -- one signed column, money out is *positive* and a
       payment is the negative one. Amex and several card issuers.
 
-    Auto-detection only claims the cases it can prove. A column containing any
-    negative value is a signed column under the first reading -- the inverse
-    would make an all-negative export pure income, which no transaction file
-    is. A column that is *entirely* positive is genuinely undecidable, and
-    guessing there is the bug this function exists to stop: read as signed, a
-    card statement reports every charge as income, a 100% savings rate and an
-    empty spending breakdown. That case raises instead.
+    Returns the frame plus the convention applied and whether it was inferred
+    rather than supplied.
     """
     if sign_convention not in SIGN_CONVENTIONS:
         raise ValueError(
-            f"sign_convention must be one of {list(SIGN_CONVENTIONS)}, got {sign_convention!r}"
+            f"sign_convention must be one of {list(SIGN_CONVENTIONS)}, got "
+            f"{sign_convention!r}. 'split_columns' is a result, not an argument -- "
+            "pass inflow_column to select that layout."
         )
 
     if inflow_column is not None:
+        if inflow_column == amount_column:
+            raise ValueError(
+                f"amount_column and inflow_column are both {amount_column!r}; every "
+                "transaction would count as spending and income at once. Pass the "
+                "debit column as amount_column and the credit column as inflow_column."
+            )
         outs = pd.to_numeric(df[amount_column], errors="coerce")
         ins = pd.to_numeric(df[inflow_column], errors="coerce")
-        if outs.isna().all() and ins.isna().all():
+        # Checked separately, and amount_column strictly: an unparseable debit
+        # column is a wrong column name, and letting it through produced a zero
+        # outflow and a 100% savings rate -- the failure this function exists to
+        # stop, reached by a different route. An empty credit column is instead
+        # a real statement with no deposits that period, so it is allowed.
+        if outs.isna().all():
             raise ValueError(
-                f"neither {amount_column!r} nor {inflow_column!r} contains parseable numbers"
+                f"amount_column {amount_column!r} contains no parseable numbers. In a "
+                "split-column export this is the debit side; pass the column holding "
+                "money out."
             )
         # Either side may be blank on any given row -- that is how these exports
         # encode direction -- so keep a row if it has a number in either column.
@@ -144,7 +232,7 @@ def _normalize_flows(
             _out=outs[keep].fillna(0.0).abs(),
             _in=ins[keep].fillna(0.0).abs(),
         )
-        return normalized, "split_columns"
+        return normalized, "split_columns", False
 
     amounts = pd.to_numeric(df[amount_column], errors="coerce")
     if amounts.isna().all():
@@ -152,23 +240,12 @@ def _normalize_flows(
     df = df.assign(_amount=amounts).dropna(subset=["_amount"])
     signed = df["_amount"]
 
-    resolved = sign_convention
-    if resolved == "auto":
-        if (signed < 0).any() or not (signed > 0).any():
-            resolved = "negative_outflow"
-        else:
-            raise AmbiguousSignConvention(
-                f"every value in {amount_column!r} is positive, so spending and income "
-                "cannot be told apart by sign. Check the preview rows from "
-                "inspect_document, then call again with "
-                "sign_convention='positive_outflow' if these are charges, or "
-                "sign_convention='negative_outflow' if they are deposits. If the file "
-                "has separate debit and credit columns, pass inflow_column instead."
-            )
+    inferred = sign_convention == "auto"
+    resolved = _detect_convention(amount_column, signed) if inferred else sign_convention
 
     if resolved == "negative_outflow":
-        return df.assign(_out=(-signed).clip(lower=0), _in=signed.clip(lower=0)), resolved
-    return df.assign(_out=signed.clip(lower=0), _in=(-signed).clip(lower=0)), resolved
+        return df.assign(_out=(-signed).clip(lower=0), _in=signed.clip(lower=0)), resolved, inferred
+    return df.assign(_out=signed.clip(lower=0), _in=(-signed).clip(lower=0)), resolved, inferred
 
 
 @tool
@@ -239,9 +316,11 @@ def summarize_spending(
     per-category monthly averages -- so you never need to divide anything
     yourself. Report the values this returns rather than recomputing them.
 
-    Exports disagree about signs, so check the preview rows before calling. If
-    every amount is positive this returns an error rather than guessing, because
-    reading a card statement the wrong way round reports every charge as income.
+    Exports disagree about signs and the numbers alone cannot settle it, so read
+    the convention off the preview rows and pass it. Left on "auto" this assumes
+    negative is money out and flags the assumption in the reply; it errors rather
+    than guessing only when the column looks like a card statement, since reading
+    one the wrong way round reports every charge as income.
 
     Args:
         path: Path to a .csv or .xlsx transaction export under /workspace/.
@@ -258,18 +337,21 @@ def summarize_spending(
             and credit columns. Supplying it means both columns hold
             magnitudes and signs are ignored.
         sign_convention: How to read a single signed column. "auto" (default)
-            uses negative-is-money-out when any negative value is present and
-            errors when the column is entirely positive.
-            "negative_outflow" forces the checking-account reading;
-            "positive_outflow" forces the card reading, where a charge is
-            positive and a payment is negative. Ignored when `inflow_column`
-            is given.
+            assumes negative is money out and sets sign_convention_inferred in
+            the reply, but errors when the column is entirely positive or when
+            positives outnumber negatives 3:1 or more, both of which look like a
+            card statement. "negative_outflow" forces the checking-account
+            reading; "positive_outflow" forces the card reading, where a charge
+            is positive and a payment is negative. Ignored when `inflow_column`
+            is given -- pass that to select the split-column layout, not this.
 
     Returns:
-        JSON with total_inflow, total_outflow, net, savings_rate,
-        transaction_count and the sign_convention actually applied, plus
-        by_category and per-month breakdowns with monthly averages when those
-        columns are given.
+        JSON with total_inflow, total_outflow, net, transaction_count and the
+        sign_convention actually applied, plus by_category and per-month
+        breakdowns with monthly averages when those columns are given.
+        savings_rate and by_category_share_of_income appear only when the file
+        actually records income: under "positive_outflow" the inflow side is
+        card payments, so an income_basis note replaces them.
     """
     try:
         resolved = _resolve(path)
@@ -286,7 +368,9 @@ def summarize_spending(
                     ValueError(f"{label} {column!r} not found. Available: {list(df.columns)}")
                 )
 
-        df, convention = _normalize_flows(df, amount_column, inflow_column, sign_convention)
+        df, convention, inferred = _normalize_flows(
+            df, amount_column, inflow_column, sign_convention
+        )
 
         outflow = float(df["_out"].sum())
         inflow = float(df["_in"].sum())
@@ -299,10 +383,33 @@ def summarize_spending(
             "total_outflow": round(outflow, 2),
             "net": round(inflow - outflow, 2),
         }
+        if inferred:
+            # Say so rather than letting the label read as a determination. The
+            # sign convention cannot be established from the numbers alone; the
+            # caller can see the preview rows and this tool cannot.
+            result["sign_convention_inferred"] = True
+            result["sign_convention_note"] = (
+                "Assumed, not determined: negative was read as money out. Confirm "
+                "against the preview rows, and pass sign_convention explicitly if "
+                "this is a card export where charges are positive."
+            )
+
+        # Under positive_outflow the inflow side is card payments, not earnings,
+        # so a "savings rate" against it is arithmetic on unrelated quantities.
+        # The docstring tells the model to report these rather than recompute
+        # them, so offering a meaningless one gets it stated with confidence.
+        income_known = convention != "positive_outflow"
+        if not income_known:
+            result["income_basis"] = (
+                "This file records card charges and payments, not income, so no "
+                "savings rate or share-of-income is available from it. Use a "
+                "checking export or the household profile for income."
+            )
+
         # The savings rate is the figure most budget questions actually want.
         # Returning it here keeps the model from dividing, which the system
         # prompt forbids and which it would otherwise have no tool for.
-        if inflow > 0:
+        if inflow > 0 and income_known:
             result["savings_rate"] = round((inflow - outflow) / inflow, 4)
 
         if category_column:
@@ -311,13 +418,36 @@ def summarize_spending(
             grouped = spend.groupby("_category")["_out"].sum().sort_values(ascending=False)
             by_cat = {str(k): round(float(v), 2) for k, v in grouped.items()}
             result["by_category"] = by_cat
-            if inflow > 0:
+            if inflow > 0 and income_known:
                 result["by_category_share_of_income"] = {
                     k: round(v / inflow, 4) for k, v in by_cat.items()
                 }
 
         if date_column:
-            dates = pd.to_datetime(df[date_column], errors="coerce", format="mixed")
+            # Numeric columns are rejected before parsing rather than after.
+            # pandas reads plain integers as epoch nanoseconds, so an invoice
+            # number or a raw Excel date serial parses "successfully" into
+            # 1970-01-01 -- every row lands in one month and the monthly
+            # averages quietly become the whole-file totals.
+            if pd.api.types.is_numeric_dtype(df[date_column]):
+                return _err(
+                    ValueError(
+                        f"date_column {date_column!r} holds numbers, not dates. Numbers "
+                        "parse as epoch offsets and would put every transaction in "
+                        "1970. If these are Excel date serials, reformat the column as "
+                        "dates before exporting."
+                    )
+                )
+            dates, per_element = _parse_dates(df[date_column])
+            if per_element:
+                # pandas could not infer one format and fell back to parsing each
+                # value on its own, which can read "01/02" and "13/02" under
+                # different day/month orders and file them in different months.
+                result["date_parsing"] = (
+                    "No single date format could be inferred, so values were parsed "
+                    "individually and the monthly buckets may be unreliable. Treat "
+                    "the totals as sound and the monthly split as approximate."
+                )
             if dates.isna().all():
                 # Otherwise by_month comes back empty and every monthly average
                 # is silently missing, which reads as "no monthly pattern"
@@ -326,17 +456,17 @@ def summarize_spending(
             dated = df.assign(_month=dates.dt.to_period("M")).dropna(subset=["_month"])
             months = sorted(dated["_month"].unique())
 
-            per_month: dict[str, dict[str, float]] = {}
-            for month in months:
-                rows = dated[dated["_month"] == month]
-                month_out = float(rows["_out"].sum())
-                month_in = float(rows["_in"].sum())
-                per_month[str(month)] = {
-                    "inflow": round(month_in, 2),
-                    "outflow": round(month_out, 2),
-                    "net": round(month_in - month_out, 2),
+            # One grouped pass rather than a full rescan of the frame per month;
+            # a two-year export was doing 24 boolean comparisons over every row.
+            totals = dated.groupby("_month")[["_out", "_in"]].sum()
+            result["by_month"] = {
+                str(month): {
+                    "inflow": round(float(row["_in"]), 2),
+                    "outflow": round(float(row["_out"]), 2),
+                    "net": round(float(row["_in"] - row["_out"]), 2),
                 }
-            result["by_month"] = per_month
+                for month, row in totals.iterrows()
+            }
 
             if months:
                 first, last = months[0], months[-1]

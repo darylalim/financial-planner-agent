@@ -175,18 +175,31 @@ entire budget. `summarize_spending` handles all three layouts:
 | *Positive* is money out | Amex and several card issuers | `sign_convention="positive_outflow"` |
 | Separate debit/credit columns | Capital One, most EU banks | `inflow_column="Credit"` |
 
-Auto-detection only claims what it can prove. Any negative value means the
-column is signed the usual way. A column that is *entirely* positive is
-genuinely undecidable, and that case returns an error naming the two ways to
-resolve it rather than guessing — read as signed, a card statement reports every
-charge as income, a 100% savings rate and an empty spending breakdown. The
-convention actually applied comes back in the payload so it can be stated to the
-user.
+**The numbers cannot settle this, and the tool does not pretend otherwise.**
+Both layouts produce mixed signs — a checking export is a few large deposits
+against many payments, a card export is many charges against a few payments —
+so "there is a negative in here" proves nothing. The information lives in the
+file's provenance, which the agent can see in the preview rows and the tool
+cannot.
+
+So `auto` assumes the ordinary reading and *says* it assumed:
+`sign_convention_inferred: true`, with a note to check it against the preview.
+It refuses outright only for the two shapes that look like a card statement —
+every value positive, or positives outnumbering negatives 3:1 or more — because
+read as signed those report every charge as income, a 100% savings rate and an
+empty spending breakdown. The 3:1 threshold is deliberately loose so a household
+with irregular income still passes.
+
+One consequence worth knowing: under `positive_outflow` the inflow side is card
+*payments*, not earnings, so `savings_rate` and `by_category_share_of_income`
+are withheld rather than computed against them, and an `income_basis` note
+explains why. A savings rate against your own credit-card payments is arithmetic
+on unrelated quantities.
 
 ## Development
 
 ```bash
-uv run pytest          # 233 tests, no API key or network required
+uv run pytest          # 258 tests, no API key or network required
 uv run ruff check .
 uv run ruff format .
 ```

@@ -40,9 +40,11 @@ encoded. There are three layouts:
 - Separate debit and credit columns → pass the debit column as `amount_column`
   and the credit column as `inflow_column`.
 
-`summarize_spending` refuses to guess when every amount is positive, so an
-unidentified layout comes back as an error rather than a reversed budget. If you
-hit that error, go back to the preview rows and pick the right option above.
+Do not skip this. The tool cannot work the convention out from the numbers —
+both layouts contain positives and negatives — so left unspecified it *assumes*
+the first option and marks the reply `sign_convention_inferred: true`. It errors
+only when the file is shaped unmistakably like a card statement. Reading a card
+export as a checking export reports every charge as income.
 
 ### 3. Aggregate
 
@@ -53,7 +55,13 @@ a budget.
 
 Check the `sign_convention` field in the response against what you saw in the
 preview. It reports what was actually applied, so it is the cheapest way to
-catch a reversed budget before you write one.
+catch a reversed budget before you write one. If `sign_convention_inferred` is
+set, nothing verified that reading but you — confirm it or call again with the
+convention stated.
+
+A card export has no income in it. `savings_rate` and share-of-income are
+withheld under `positive_outflow` and an `income_basis` note appears instead;
+take income from a checking export or `/AGENTS.md`, never from card payments.
 
 For several accounts, summarize each separately, then combine. Watch for
 double counting: a credit-card payment appears as an outflow in checking *and*

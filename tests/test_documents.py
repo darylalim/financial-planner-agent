@@ -532,3 +532,211 @@ class TestUnparseableDateColumn:
         path = csv_file("baddate", "Ref,Amount\nINV-001,4000.00\nINV-002,-1000.00\n")
         result = _call(summarize_spending, path=path, amount_column="Amount", date_column="Ref")
         assert "no parseable dates" in result["error"]
+
+
+class TestSignConventionDefectsFoundByReview:
+    """Every case here silently inverted or emptied a budget.
+
+    They all reached the same failure the sign handling was written to stop --
+    a plausible-looking payload with the spending and income sides swapped, or
+    with spending missing entirely -- through routes the first version left open.
+    """
+
+    CARD = (
+        "Date,Category,Amount\n"
+        "2026-01-05,Groceries,300\n"
+        "2026-01-06,Dining,200\n"
+        "2026-01-07,Travel,500\n"
+        "2026-01-20,Payment,-50\n"
+    )
+
+    SPLIT = (
+        "Date,Description,Debit,Credit\n"
+        "2026-01-03,Paycheck,,4200.00\n"
+        "2026-01-04,Rent,1850.00,\n"
+        "2026-01-05,Groceries,150.00,\n"
+    )
+
+    def test_split_columns_is_a_result_not_an_argument(self, sample_csv):
+        """It was accepted, fell through to positive_outflow, and reported
+        "split_columns" -- the label SKILL.md tells the agent to trust as its
+        reversal check, on a budget that was exactly backwards."""
+        result = _call(
+            summarize_spending,
+            path=sample_csv,
+            amount_column="Amount",
+            sign_convention="split_columns",
+        )
+        assert "error" in result
+        assert "inflow_column" in result["error"]
+
+    def test_a_wrong_debit_column_errors_instead_of_reporting_no_spending(self, csv_file):
+        """The guard required *both* columns to be unparseable, so naming a text
+        column as the debit side gave total_outflow 0 and savings_rate 1.0."""
+        path = csv_file("splitwrong", self.SPLIT)
+        result = _call(
+            summarize_spending,
+            path=path,
+            amount_column="Description",
+            inflow_column="Credit",
+        )
+        assert "no parseable numbers" in result["error"]
+
+    def test_an_empty_credit_column_is_still_allowed(self, csv_file):
+        """A statement period with no deposits is real; a wrong column is not."""
+        path = csv_file(
+            "nodeposits", "Date,Debit,Credit\n2026-01-04,1850.00,\n2026-01-05,150.00,\n"
+        )
+        result = _call(summarize_spending, path=path, amount_column="Debit", inflow_column="Credit")
+        assert result["total_outflow"] == pytest.approx(2_000.00)
+        assert result["total_inflow"] == pytest.approx(0.0)
+
+    def test_the_same_column_twice_is_refused(self, csv_file):
+        """It counted every transaction as spending and income at once, which
+        reports a break-even household."""
+        path = csv_file("dup", "Date,Amount\n2026-01-03,200\n2026-01-04,100\n")
+        result = _call(
+            summarize_spending, path=path, amount_column="Amount", inflow_column="Amount"
+        )
+        assert "at once" in result["error"]
+
+    def test_a_card_export_with_a_payment_row_is_refused_not_inverted(self, csv_file):
+        """The real hole in the first version. Both layouts produce mixed signs
+        -- a checking export is few deposits against many payments, a card
+        export is many charges against few payments -- so "any negative means
+        the ordinary reading" read a normal Amex month backwards and reported
+        $1,000 of charges as income against $50 of spending."""
+        path = csv_file("card", self.CARD)
+        result = _call(
+            summarize_spending, path=path, amount_column="Amount", category_column="Category"
+        )
+        assert "AmbiguousSignConvention" in result["error"]
+        assert "positive_outflow" in result["error"]
+
+    def test_the_refusal_reports_the_counts_that_triggered_it(self, csv_file):
+        path = csv_file("card", self.CARD)
+        error = _call(summarize_spending, path=path, amount_column="Amount")["error"]
+        assert "3 positive" in error
+        assert "1 negative" in error
+
+    def test_a_checking_export_with_irregular_income_still_passes(self, csv_file):
+        """The threshold has to clear a real household. Two deposits against one
+        large payment is 2:1 positive and must not trip the card heuristic."""
+        path = csv_file(
+            "irregular", "Date,Amount\n2026-01-03,3000\n2026-01-15,3000\n2026-01-20,-1000\n"
+        )
+        result = _call(summarize_spending, path=path, amount_column="Amount")
+        assert result["sign_convention"] == "negative_outflow"
+        assert result["total_outflow"] == pytest.approx(1_000.00)
+
+    def test_an_inferred_convention_says_so(self, sample_csv):
+        """The label read as a determination; it is an assumption."""
+        result = _call(summarize_spending, path=sample_csv, amount_column="Amount")
+        assert result["sign_convention_inferred"] is True
+        assert "Assumed" in result["sign_convention_note"]
+
+    def test_an_explicit_convention_is_not_flagged_as_inferred(self, sample_csv):
+        result = _call(
+            summarize_spending,
+            path=sample_csv,
+            amount_column="Amount",
+            sign_convention="negative_outflow",
+        )
+        assert "sign_convention_inferred" not in result
+
+    def test_split_columns_are_never_inferred(self, csv_file):
+        path = csv_file("split", self.SPLIT)
+        result = _call(summarize_spending, path=path, amount_column="Debit", inflow_column="Credit")
+        assert "sign_convention_inferred" not in result
+
+
+class TestCardExportsHaveNoIncome:
+    """Under positive_outflow the inflow side is card payments, not earnings.
+
+    A savings rate against it divides unrelated quantities, and SKILL.md names
+    savings_rate as one of the three headline numbers to report -- so offering a
+    meaningless one gets it stated to the user with confidence.
+    """
+
+    CARD = (
+        "Date,Category,Amount\n"
+        "2026-01-05,Groceries,1500\n"
+        "2026-01-06,Dining,500\n"
+        "2026-01-20,Payment,-500\n"
+    )
+
+    def test_no_savings_rate_is_offered(self, csv_file):
+        path = csv_file("card", self.CARD)
+        result = _call(
+            summarize_spending,
+            path=path,
+            amount_column="Amount",
+            sign_convention="positive_outflow",
+        )
+        assert "savings_rate" not in result
+
+    def test_no_share_of_income_is_offered(self, csv_file):
+        path = csv_file("card", self.CARD)
+        result = _call(
+            summarize_spending,
+            path=path,
+            amount_column="Amount",
+            category_column="Category",
+            sign_convention="positive_outflow",
+        )
+        assert "by_category_share_of_income" not in result
+        assert result["by_category"]["Groceries"] == pytest.approx(1_500.00)
+
+    def test_the_omission_is_explained_rather_than_silent(self, csv_file):
+        path = csv_file("card", self.CARD)
+        result = _call(
+            summarize_spending,
+            path=path,
+            amount_column="Amount",
+            sign_convention="positive_outflow",
+        )
+        assert "not income" in result["income_basis"]
+
+    def test_a_checking_export_still_gets_its_savings_rate(self, sample_csv):
+        assert "savings_rate" in _call(summarize_spending, path=sample_csv, amount_column="Amount")
+
+
+class TestDateColumnDefectsFoundByReview:
+    def test_a_numeric_column_is_refused_not_parsed_as_epoch(self, csv_file):
+        """pandas reads plain integers as epoch nanoseconds, so invoice numbers
+        parsed "successfully" into 1970-01-01 -- every row in one month, and the
+        monthly averages quietly became the whole-file totals."""
+        path = csv_file("epoch", "Ref,Amount\n1001,4000\n1002,-1000\n1003,-500\n")
+        result = _call(summarize_spending, path=path, amount_column="Amount", date_column="Ref")
+        assert "1970" in result["error"]
+
+    def test_excel_date_serials_are_refused_with_advice(self, csv_file):
+        path = csv_file("serial", "Date,Amount\n46023,4000\n46024,-1000\n46025,-500\n")
+        result = _call(summarize_spending, path=path, amount_column="Amount", date_column="Date")
+        assert "Excel date serials" in result["error"]
+
+    def test_day_first_dates_surface_as_undated_rather_than_wrong_months(self, csv_file):
+        """All three rows are February. Parsing each value on its own read the
+        first as month-first and filed it under January, splitting one month's
+        spending across two and halving the monthly average. A single inferred
+        format leaves the non-matching rows visible instead."""
+        path = csv_file(
+            "dayfirst", "Date,Amount\n01/02/2026,-100\n13/02/2026,-200\n28/02/2026,-300\n"
+        )
+        result = _call(summarize_spending, path=path, amount_column="Amount", date_column="Date")
+        assert result["undated_transactions"] == 2
+        assert set(result["by_month"]) == {"2026-01"}
+        assert result["averages_basis"]
+
+    def test_a_per_element_fallback_is_reported(self, csv_file):
+        """pandas still falls back on its own when it can infer nothing, so the
+        fallback is detected and flagged rather than left to run silently."""
+        path = csv_file("fallback", "Date,Amount\npending,-100\n2026-01-05,-200\n2026-02-05,-300\n")
+        result = _call(summarize_spending, path=path, amount_column="Amount", date_column="Date")
+        assert "may be unreliable" in result["date_parsing"]
+
+    def test_a_clean_date_column_carries_no_parsing_note(self, sample_csv):
+        result = _call(
+            summarize_spending, path=sample_csv, amount_column="Amount", date_column="Date"
+        )
+        assert "date_parsing" not in result

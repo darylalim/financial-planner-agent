@@ -21,6 +21,7 @@ import pytest
 from financial_planner.tools import market
 from financial_planner.tools.market import (
     MAX_TICKERS,
+    TRADING_DAYS,
     get_fund_profile,
     get_historical_return,
     get_quote,
@@ -213,11 +214,35 @@ class TestHistoricalReturn:
         assert result["annualized_return"] == pytest.approx(0.1487, abs=0.005)
         assert result["total_return"] == pytest.approx(1.0, abs=0.01)
 
-    def test_volatility_is_annualized_and_non_negative(self, monkeypatch):
-        install(
-            monkeypatch, lambda s: FakeTicker(s, history=price_history(100.0, 200.0, days=1826))
+    def test_volatility_is_annualized_by_the_trading_day_factor(self, monkeypatch):
+        """A geometric series has zero variance, so it cannot test this.
+
+        The first version of this asserted `>= 0` against `price_history`, which
+        rises at a perfectly constant rate -- its per-bar return std is ~1e-16,
+        so the assertion held for any annualization factor, or for none at all.
+        This uses a series with real dispersion and pins the arithmetic.
+        """
+        closes = [100.0, 110.0, 99.0, 115.0, 104.0, 121.0]
+        frame = pd.DataFrame(
+            {"Close": closes},
+            index=pd.to_datetime(pd.date_range("2020-01-01", periods=len(closes), freq="365D")),
         )
-        assert call(get_historical_return, ticker="VTI")["annualized_volatility"] >= 0
+        install(monkeypatch, lambda s: FakeTicker(s, history=frame))
+
+        expected = float(frame["Close"].pct_change().dropna().std() * TRADING_DAYS**0.5)
+        result = call(get_historical_return, ticker="VTI")
+        assert result["annualized_volatility"] == pytest.approx(round(expected, 4))
+        assert result["annualized_volatility"] > 0
+
+    def test_a_flat_series_reports_no_volatility(self, monkeypatch):
+        flat = pd.DataFrame(
+            {"Close": [100.0] * 5},
+            index=pd.to_datetime(pd.date_range("2020-01-01", periods=5, freq="365D")),
+        )
+        install(monkeypatch, lambda s: FakeTicker(s, history=flat))
+        result = call(get_historical_return, ticker="VTI")
+        assert result["annualized_volatility"] == pytest.approx(0.0, abs=1e-9)
+        assert result["annualized_return"] == pytest.approx(0.0, abs=1e-9)
 
     def test_the_forecast_caveat_is_always_returned(self, monkeypatch):
         install(

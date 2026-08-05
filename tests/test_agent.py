@@ -26,6 +26,7 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langgraph.checkpoint.memory import InMemorySaver
 
 from financial_planner.agent import build_agent
+from financial_planner.config import DEFAULT_MODEL
 from financial_planner.tools import ALL_TOOLS
 
 # The filesystem tools build_agent asks for by name. `delete` and `execute` are
@@ -95,6 +96,60 @@ class TestBoundTools:
     def test_the_bound_set_is_exactly_what_we_asked_for(self, agent: Any) -> None:
         """Catches tools arriving from a library upgrade as well as leaving."""
         assert bound_tool_names(agent) == {t.name for t in ALL_TOOLS} | HARNESS_TOOLS
+
+
+def subagent_tool_names(agent: Any, name: str = "general-purpose") -> set[str]:
+    """Reach the compiled subagent graph hanging off the `task` tool.
+
+    deepagents exposes no public accessor, so this walks the tool's closure. If
+    a future version restructures that, this raises and the test fails loudly --
+    which is the point: silence here is what the assertions below exist to
+    prevent.
+    """
+    task = agent.nodes["tools"].bound._tools_by_name["task"]
+    cells = dict(zip(task.func.__code__.co_freevars, task.func.__closure__, strict=True))
+    return set(cells["subagent_graphs"].cell_contents[name].nodes["tools"].bound._tools_by_name)
+
+
+class TestSubagentInheritsTheNarrowedFilesystem:
+    """The `task` subagent is a second agent over the same agent_home.
+
+    deepagents builds it its own FilesystemMiddleware and only inherits the
+    narrowed one through a name-matching rule. Pinning only the main graph would
+    leave the subagent free to regain `delete` over the household's statements
+    while every assertion in TestBoundTools still passed.
+    """
+
+    @pytest.mark.parametrize("name", sorted(WITHHELD_TOOLS))
+    def test_the_subagent_does_not_regain_withheld_tools(self, agent: Any, name: str) -> None:
+        assert name not in subagent_tool_names(agent)
+
+    def test_the_subagent_keeps_the_filesystem_tools_it_needs(self, agent: Any) -> None:
+        assert {"ls", "read_file", "write_file", "edit_file", "glob", "grep"} <= (
+            subagent_tool_names(agent)
+        )
+
+    def test_the_subagent_can_still_do_the_finance_work(self, agent: Any) -> None:
+        assert {t.name for t in ALL_TOOLS} <= subagent_tool_names(agent)
+
+
+class TestHarnessProfileAssumptions:
+    """`build_agent` replaces FilesystemMiddleware and forwards only `backend`.
+
+    deepagents also passes `custom_tool_descriptions` from the resolved harness
+    profile, which the replacement drops. That is harmless only while the
+    configured model's profile carries no overrides -- and DEFAULT_MODEL is
+    env-overridable via FINANCIAL_PLANNER_MODEL, while other shipped profiles do
+    set them. Reproducing private constructor arguments would be worse than
+    asserting the assumption they rest on.
+    """
+
+    def test_the_configured_model_has_no_profile_overrides_to_drop(self) -> None:
+        from deepagents.graph import _harness_profile_for_model
+
+        profile = _harness_profile_for_model(DEFAULT_MODEL, None)
+        assert dict(profile.tool_description_overrides) == {}
+        assert set(profile.excluded_tools) == set()
 
 
 class TestMiddlewareSurvives:
