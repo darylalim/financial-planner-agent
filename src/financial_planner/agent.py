@@ -12,6 +12,14 @@ Storage design -- two kinds of persistence, deliberately separated:
   requirement outright.
 * **Conversation and todo state** live in a SQLite checkpointer keyed by
   ``thread_id``, so an interrupted planning session resumes where it stopped.
+
+Middleware -- two deliberate departures from what ``create_deep_agent``
+assembles on its own. Both are passed through ``middleware=``, which is
+*additive*: it splices into the default stack rather than replacing it, so the
+skills and memory middleware configured below survive untouched. The one rule
+is that a custom middleware whose ``.name`` matches a default replaces that
+default in place -- which is exactly how the filesystem narrowing works, and
+exactly why ``test_agent.py`` pins the resulting tool set.
 """
 
 from __future__ import annotations
@@ -19,8 +27,9 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-from deepagents import create_deep_agent
+from deepagents import FilesystemMiddleware, create_deep_agent
 from deepagents.backends import FilesystemBackend
+from langchain.agents.middleware import TodoListMiddleware
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from financial_planner.config import (
@@ -113,6 +122,35 @@ def build_agent(
         backend=backend,
         skills=[VIRTUAL_SKILLS],
         memory=[VIRTUAL_MEMORY],
+        middleware=[
+            # Narrows the built-in filesystem tools. Matched by `.name`, this
+            # *replaces* the FilesystemMiddleware create_deep_agent would have
+            # built, so it must receive the same backend instance.
+            #
+            # `delete` is dropped because nothing in this product needs it: the
+            # agent appends to /workspace/ and edits /AGENTS.md, never removes.
+            # Leaving it bound would hand recursive deletion over the user's
+            # bank statements to an agent that also ingests prompt-injectable
+            # PDFs -- and there is no approval gate in the UI to catch it.
+            # `execute` is dropped because FilesystemBackend is not a sandbox
+            # backend, so it could only ever return an error; the exclusion
+            # keeps it out of the tool node instead of relying on the runtime
+            # capability filter to hide it from each request.
+            #
+            # Omitted tools never reach the dispatchable tool node, so this is
+            # a real removal rather than a hidden-from-the-model schema filter.
+            FilesystemMiddleware(
+                backend=backend,
+                tools=["ls", "read_file", "write_file", "edit_file", "glob", "grep"],
+            ),
+            # deepagents 0.7 dropped todo planning from its default stack, so
+            # `write_todos` has to be asked for explicitly. The system prompt
+            # tells the agent to plan multi-step work visibly and the UI has a
+            # status label for it, neither of which meant anything while the
+            # tool went unbound. Brings its own `todos` state channel, which
+            # the SQLite checkpointer then persists per thread.
+            TodoListMiddleware(),
+        ],
         checkpointer=checkpointer if checkpointer is not None else build_checkpointer(),
         name="financial-planner",
     )

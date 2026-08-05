@@ -30,18 +30,30 @@ Run `inspect_document` on every file. You need the real column names — guessin
 `"Amount"` when the file says `"Transaction Amount"` wastes a call and produces
 a confusing error.
 
-**Verify the sign convention from the preview rows before trusting any total.**
-Find a row you can identify as spending (a grocery store, a utility) and check
-its sign. If spending is positive in this file, say so explicitly in your
-summary — `summarize_spending` treats negative as money out, so a
-positive-spend file reports outflow as inflow. Note the inversion rather than
-silently reporting a reversed budget.
+**Read the sign convention off the preview rows before aggregating.** Find a row
+you can identify as spending — a grocery store, a utility — and check how it is
+encoded. There are three layouts:
+
+- Spending negative, income positive → the default. Nothing to pass.
+- Spending positive, payments negative → pass
+  `sign_convention="positive_outflow"`. Common on card exports.
+- Separate debit and credit columns → pass the debit column as `amount_column`
+  and the credit column as `inflow_column`.
+
+`summarize_spending` refuses to guess when every amount is positive, so an
+unidentified layout comes back as an error rather than a reversed budget. If you
+hit that error, go back to the preview rows and pick the right option above.
 
 ### 3. Aggregate
 
 Call `summarize_spending` with `amount_column`, plus `category_column` and
-`date_column` whenever those exist. The monthly series is what makes the
-average trustworthy — a single month is not a budget.
+`date_column` whenever those exist, and whichever sign option step 2 identified.
+The monthly series is what makes the average trustworthy — a single month is not
+a budget.
+
+Check the `sign_convention` field in the response against what you saw in the
+preview. It reports what was actually applied, so it is the cheapest way to
+catch a reversed budget before you write one.
 
 For several accounts, summarize each separately, then combine. Watch for
 double counting: a credit-card payment appears as an outflow in checking *and*
@@ -54,6 +66,10 @@ the payment.
 - Monthly spending by category — `by_category_monthly_average`, largest first
 - Savings rate — the `savings_rate` field
 - Fixed versus discretionary, when categories permit
+
+Rows with a blank category arrive under `Uncategorized`. If that bucket is large
+enough to change the picture, say so — it is unclassified spending, not an
+absence of it.
 
 `summarize_spending` returns every one of those figures already computed. Report
 what it returns; do not divide its totals yourself. Check `months_covered` and

@@ -39,7 +39,7 @@ Then attach a CSV/XLSX/PDF statement in the chat box, or try
 **The model never does the math.** Every figure comes from `finance.py` via a
 tool call. A language model will produce a *plausible* compound-interest number
 that is wrong by tens of thousands of dollars, and the person reading it has no
-way to tell. The system prompt enforces this, and the math has 29 tests pinned
+way to tell. The system prompt enforces this, and the math has 36 tests pinned
 to externally verifiable values (a standard mortgage payment, textbook compound
 growth).
 
@@ -150,13 +150,43 @@ analysis goes wrong.
 Plus the Deep Agents built-ins: `write_todos`, `ls`, `read_file`, `write_file`,
 `edit_file`, `glob`, `grep`, `task`.
 
+Two of those are not the defaults. `create_deep_agent` binds `delete` and
+`execute` as well, and does not bind `write_todos` at all, so `build_agent`
+passes a `middleware=` list that narrows the filesystem tools and adds the
+planning tool back. `delete` is withheld because the agent only ever appends to
+`/workspace/` and edits `/AGENTS.md` — handing recursive deletion to something
+that also ingests prompt-injectable PDFs buys nothing, and the UI has no
+approval gate. `execute` could only return an error anyway, since
+`FilesystemBackend` is not a sandbox backend. `test_agent.py` pins the exact
+bound set, because the middleware override is matched by class name and would
+fail open on a rename.
+
 Document tools **summarize rather than dump** — a year of transactions is 5,000+
 rows, and returning them raw would crowd out the rest of the session.
+
+### Sign conventions
+
+Exports disagree about what a sign means, and reading one wrong inverts the
+entire budget. `summarize_spending` handles all three layouts:
+
+| Layout | Who does it | How to call it |
+|---|---|---|
+| Negative is money out | Most checking exports, Chase cards | Default |
+| *Positive* is money out | Amex and several card issuers | `sign_convention="positive_outflow"` |
+| Separate debit/credit columns | Capital One, most EU banks | `inflow_column="Credit"` |
+
+Auto-detection only claims what it can prove. Any negative value means the
+column is signed the usual way. A column that is *entirely* positive is
+genuinely undecidable, and that case returns an error naming the two ways to
+resolve it rather than guessing — read as signed, a card statement reports every
+charge as income, a 100% savings rate and an empty spending breakdown. The
+convention actually applied comes back in the payload so it can be stated to the
+user.
 
 ## Development
 
 ```bash
-uv run pytest          # 140 tests, no API key or network required
+uv run pytest          # 233 tests, no API key or network required
 uv run ruff check .
 uv run ruff format .
 ```

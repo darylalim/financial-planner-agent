@@ -28,7 +28,10 @@ from financial_planner.rendering import escape_dollars
 from financial_planner.streaming import Token, ToolEnd, ToolStart, stream_agent_events
 from financial_planner.uploads import save_uploads
 
-UPLOAD_TYPES = ["csv", "xlsx", "xls", "pdf"]
+# No "xls": reading legacy BIFF needs xlrd, which is not a dependency, so
+# accepting one only produced a file the sidebar listed and every tool call
+# then failed on. Better to reject it at the picker.
+UPLOAD_TYPES = ["csv", "xlsx", "pdf"]
 
 TOOL_LABELS = {
     "project_savings": "Projecting savings",

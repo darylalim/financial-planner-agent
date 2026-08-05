@@ -41,6 +41,18 @@ def _err(message: str) -> str:
     return json.dumps({"error": message})
 
 
+def _redact(message: str) -> str:
+    """Strip the API key out of anything headed for the model's context.
+
+    Upstream exception text is relayed verbatim so the model can act on it, and
+    HTTP clients routinely quote the failing request back. This reply lands in
+    the model's context and in the saved transcript, so a key echoed here
+    outlives the error that produced it.
+    """
+    key = config.TAVILY_API_KEY
+    return message.replace(key, "***") if key else message
+
+
 @tool
 def search_web(query: str, authoritative_only: bool = False) -> str:
     """Search the web for current financial facts, rates, rules and limits.
@@ -103,7 +115,7 @@ def search_web(query: str, authoritative_only: bool = False) -> str:
             default=str,
         )
     except Exception as exc:  # noqa: BLE001
-        return _err(f"{type(exc).__name__}: {exc}")
+        return _err(_redact(f"{type(exc).__name__}: {exc}"))
 
 
 SEARCH_TOOLS = [search_web]

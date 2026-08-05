@@ -1,10 +1,13 @@
 """Custom tools exposed to the planning agent.
 
-Deep Agents already supplies filesystem (`ls`, `read_file`, `write_file`,
-`edit_file`, `glob`, `grep`), planning (`write_todos`) and delegation (`task`)
-tools, so nothing here duplicates those. These add the three capabilities the
-harness has no opinion about: deterministic finance math, market data, and
-structured document ingestion.
+The agent also gets filesystem (`ls`, `read_file`, `write_file`, `edit_file`,
+`glob`, `grep`), planning (`write_todos`) and delegation (`task`) tools, so
+nothing here duplicates those. Only the filesystem and delegation tools arrive
+by default; the filesystem set is narrowed and `write_todos` added back in
+``agent.build_agent`` -- see the middleware list there for why.
+
+These add the three capabilities the harness has no opinion about:
+deterministic finance math, market data, and structured document ingestion.
 """
 
 from financial_planner.tools.calculators import CALCULATOR_TOOLS

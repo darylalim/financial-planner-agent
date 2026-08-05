@@ -9,6 +9,11 @@ Path safety: the built-in filesystem tools are sandboxed by ``FilesystemBackend`
 (``virtual_mode=True``), but these custom tools receive raw strings from the
 model and must enforce the same boundary themselves. :func:`_resolve` is the
 single choke point for that.
+
+Sign conventions: exports disagree about what a sign means, and reading one
+wrong inverts the entire budget. :func:`_normalize_flows` is the single choke
+point for that -- everything downstream reads the non-negative ``_out``/``_in``
+columns it produces rather than testing the raw amount's sign.
 """
 
 from __future__ import annotations
@@ -26,9 +31,17 @@ from financial_planner.config import AGENT_HOME
 MAX_PREVIEW_ROWS = 5
 MAX_PDF_CHARS = 20_000
 
+SIGN_CONVENTIONS = ("auto", "negative_outflow", "positive_outflow", "split_columns")
+
+UNCATEGORIZED = "Uncategorized"
+
 
 class PathOutsideSandbox(ValueError):
     """Raised when a model-supplied path escapes the agent's root directory."""
+
+
+class AmbiguousSignConvention(ValueError):
+    """Raised when an amount column cannot be read as spending or as income."""
 
 
 def _resolve(virtual_path: str) -> Path:
@@ -59,13 +72,103 @@ def _err(exc: Exception) -> str:
 
 
 def _load_table(path: Path) -> pd.DataFrame:
-    """Read a CSV or Excel file into a DataFrame."""
+    """Read a CSV or Excel file into a DataFrame.
+
+    Legacy ``.xls`` is deliberately absent. Reading BIFF needs ``xlrd``, which is
+    not a dependency, so accepting one only bought a file the sidebar listed and
+    every tool call then failed on.
+    """
     suffix = path.suffix.lower()
     if suffix == ".csv":
         return pd.read_csv(path)
-    if suffix in (".xlsx", ".xls"):
+    if suffix == ".xlsx":
         return pd.read_excel(path)
-    raise ValueError(f"unsupported table format {suffix!r}; expected .csv, .xlsx or .xls")
+    raise ValueError(f"unsupported table format {suffix!r}; expected .csv or .xlsx")
+
+
+def _category_labels(series: pd.Series) -> pd.Series:
+    """Fold blanks into one visible bucket.
+
+    ``groupby`` drops NaN keys by default, which silently removed uncategorized
+    rows from the breakdown while leaving them in ``total_outflow`` -- so the
+    categories did not add up to the total the same payload reported, with
+    nothing to say why.
+    """
+    labels = series.astype("string").str.strip()
+    return labels.mask(labels.isna() | (labels == ""), UNCATEGORIZED)
+
+
+def _normalize_flows(
+    df: pd.DataFrame,
+    amount_column: str,
+    inflow_column: str | None,
+    sign_convention: str,
+) -> tuple[pd.DataFrame, str]:
+    """Add non-negative ``_out``/``_in`` columns and report the convention used.
+
+    Three layouts occur in real exports and they disagree about what a sign
+    means:
+
+    * **split columns** -- separate debit and credit columns holding magnitudes,
+      common from Capital One and most European banks. Selected by passing
+      ``inflow_column``; nothing is inferred.
+    * **negative_outflow** -- one signed column, money out is negative. Most
+      checking exports, and Chase's card export.
+    * **positive_outflow** -- one signed column, money out is *positive* and a
+      payment is the negative one. Amex and several card issuers.
+
+    Auto-detection only claims the cases it can prove. A column containing any
+    negative value is a signed column under the first reading -- the inverse
+    would make an all-negative export pure income, which no transaction file
+    is. A column that is *entirely* positive is genuinely undecidable, and
+    guessing there is the bug this function exists to stop: read as signed, a
+    card statement reports every charge as income, a 100% savings rate and an
+    empty spending breakdown. That case raises instead.
+    """
+    if sign_convention not in SIGN_CONVENTIONS:
+        raise ValueError(
+            f"sign_convention must be one of {list(SIGN_CONVENTIONS)}, got {sign_convention!r}"
+        )
+
+    if inflow_column is not None:
+        outs = pd.to_numeric(df[amount_column], errors="coerce")
+        ins = pd.to_numeric(df[inflow_column], errors="coerce")
+        if outs.isna().all() and ins.isna().all():
+            raise ValueError(
+                f"neither {amount_column!r} nor {inflow_column!r} contains parseable numbers"
+            )
+        # Either side may be blank on any given row -- that is how these exports
+        # encode direction -- so keep a row if it has a number in either column.
+        keep = outs.notna() | ins.notna()
+        normalized = df.loc[keep].assign(
+            _out=outs[keep].fillna(0.0).abs(),
+            _in=ins[keep].fillna(0.0).abs(),
+        )
+        return normalized, "split_columns"
+
+    amounts = pd.to_numeric(df[amount_column], errors="coerce")
+    if amounts.isna().all():
+        raise ValueError(f"column {amount_column!r} contains no parseable numbers")
+    df = df.assign(_amount=amounts).dropna(subset=["_amount"])
+    signed = df["_amount"]
+
+    resolved = sign_convention
+    if resolved == "auto":
+        if (signed < 0).any() or not (signed > 0).any():
+            resolved = "negative_outflow"
+        else:
+            raise AmbiguousSignConvention(
+                f"every value in {amount_column!r} is positive, so spending and income "
+                "cannot be told apart by sign. Check the preview rows from "
+                "inspect_document, then call again with "
+                "sign_convention='positive_outflow' if these are charges, or "
+                "sign_convention='negative_outflow' if they are deposits. If the file "
+                "has separate debit and credit columns, pass inflow_column instead."
+            )
+
+    if resolved == "negative_outflow":
+        return df.assign(_out=(-signed).clip(lower=0), _in=signed.clip(lower=0)), resolved
+    return df.assign(_out=signed.clip(lower=0), _in=(-signed).clip(lower=0)), resolved
 
 
 @tool
@@ -76,7 +179,7 @@ def inspect_document(path: str) -> str:
     names, data types, row count and a few sample rows, so you can choose the
     right column names for `summarize_spending` instead of guessing.
 
-    Works on .csv, .xlsx, .xls and .pdf files under /workspace/.
+    Works on .csv, .xlsx and .pdf files under /workspace/.
 
     Args:
         path: Path to the document, e.g. "/workspace/checking-2025.csv".
@@ -122,51 +225,76 @@ def summarize_spending(
     amount_column: str,
     category_column: str | None = None,
     date_column: str | None = None,
+    inflow_column: str | None = None,
+    sign_convention: str = "auto",
 ) -> str:
     """Aggregate a transaction file into spending totals. Use instead of reading rows.
 
     Call this to build a budget picture from a bank or credit-card export. Run
-    `inspect_document` first to learn the real column names -- passing a name
-    that does not exist returns an error listing the available columns.
+    `inspect_document` first to learn the real column names and to see which way
+    round the amounts run -- passing a name that does not exist returns an error
+    listing the available columns.
 
     It also returns the derived ratios -- savings rate, monthly averages,
     per-category monthly averages -- so you never need to divide anything
     yourself. Report the values this returns rather than recomputing them.
 
+    Exports disagree about signs, so check the preview rows before calling. If
+    every amount is positive this returns an error rather than guessing, because
+    reading a card statement the wrong way round reports every charge as income.
+
     Args:
         path: Path to a .csv or .xlsx transaction export under /workspace/.
-        amount_column: Column holding the transaction amount. Negative values
-            are treated as money out, positive as money in.
+        amount_column: Column holding the transaction amount. When
+            `inflow_column` is given, this is the money-out column and its
+            values are read as magnitudes.
         category_column: Optional column to group spending by (e.g. "Category",
             "Description"). Produces a per-category breakdown when supplied.
+            Rows with a blank category are grouped under "Uncategorized" rather
+            than dropped, so the breakdown always adds up to total_outflow.
         date_column: Optional date column. Produces a per-month series when
             supplied, which is what you need for monthly-average questions.
+        inflow_column: Optional second column, for exports with separate debit
+            and credit columns. Supplying it means both columns hold
+            magnitudes and signs are ignored.
+        sign_convention: How to read a single signed column. "auto" (default)
+            uses negative-is-money-out when any negative value is present and
+            errors when the column is entirely positive.
+            "negative_outflow" forces the checking-account reading;
+            "positive_outflow" forces the card reading, where a charge is
+            positive and a payment is negative. Ignored when `inflow_column`
+            is given.
 
     Returns:
-        JSON with total_inflow, total_outflow, net, savings_rate and
-        transaction_count, plus by_category and per-month breakdowns with
-        monthly averages when those columns are given.
+        JSON with total_inflow, total_outflow, net, savings_rate,
+        transaction_count and the sign_convention actually applied, plus
+        by_category and per-month breakdowns with monthly averages when those
+        columns are given.
     """
     try:
         resolved = _resolve(path)
         df = _load_table(resolved)
 
-        if amount_column not in df.columns:
-            return _err(
-                ValueError(f"column {amount_column!r} not found. Available: {list(df.columns)}")
-            )
+        for label, column in (
+            ("amount_column", amount_column),
+            ("inflow_column", inflow_column),
+            ("category_column", category_column),
+            ("date_column", date_column),
+        ):
+            if column is not None and column not in df.columns:
+                return _err(
+                    ValueError(f"{label} {column!r} not found. Available: {list(df.columns)}")
+                )
 
-        amounts = pd.to_numeric(df[amount_column], errors="coerce")
-        if amounts.isna().all():
-            return _err(ValueError(f"column {amount_column!r} contains no parseable numbers"))
-        df = df.assign(_amount=amounts).dropna(subset=["_amount"])
+        df, convention = _normalize_flows(df, amount_column, inflow_column, sign_convention)
 
-        outflow = float(-df.loc[df["_amount"] < 0, "_amount"].sum())
-        inflow = float(df.loc[df["_amount"] > 0, "_amount"].sum())
+        outflow = float(df["_out"].sum())
+        inflow = float(df["_in"].sum())
 
         result: dict[str, Any] = {
             "path": path,
             "transaction_count": int(len(df)),
+            "sign_convention": convention,
             "total_inflow": round(inflow, 2),
             "total_outflow": round(outflow, 2),
             "net": round(inflow - outflow, 2),
@@ -178,16 +306,9 @@ def summarize_spending(
             result["savings_rate"] = round((inflow - outflow) / inflow, 4)
 
         if category_column:
-            if category_column not in df.columns:
-                return _err(
-                    ValueError(
-                        f"column {category_column!r} not found. Available: {list(df.columns)}"
-                    )
-                )
-            spend = df[df["_amount"] < 0]
-            grouped = (-spend.groupby(category_column)["_amount"].sum()).sort_values(
-                ascending=False
-            )
+            df = df.assign(_category=_category_labels(df[category_column]))
+            spend = df[df["_out"] > 0]
+            grouped = spend.groupby("_category")["_out"].sum().sort_values(ascending=False)
             by_cat = {str(k): round(float(v), 2) for k, v in grouped.items()}
             result["by_category"] = by_cat
             if inflow > 0:
@@ -196,19 +317,20 @@ def summarize_spending(
                 }
 
         if date_column:
-            if date_column not in df.columns:
-                return _err(
-                    ValueError(f"column {date_column!r} not found. Available: {list(df.columns)}")
-                )
-            dates = pd.to_datetime(df[date_column], errors="coerce")
+            dates = pd.to_datetime(df[date_column], errors="coerce", format="mixed")
+            if dates.isna().all():
+                # Otherwise by_month comes back empty and every monthly average
+                # is silently missing, which reads as "no monthly pattern"
+                # rather than "this column was not dates".
+                return _err(ValueError(f"column {date_column!r} contains no parseable dates"))
             dated = df.assign(_month=dates.dt.to_period("M")).dropna(subset=["_month"])
             months = sorted(dated["_month"].unique())
 
             per_month: dict[str, dict[str, float]] = {}
             for month in months:
                 rows = dated[dated["_month"] == month]
-                month_out = float(-rows.loc[rows["_amount"] < 0, "_amount"].sum())
-                month_in = float(rows.loc[rows["_amount"] > 0, "_amount"].sum())
+                month_out = float(rows["_out"].sum())
+                month_in = float(rows["_in"].sum())
                 per_month[str(month)] = {
                     "inflow": round(month_in, 2),
                     "outflow": round(month_out, 2),
@@ -229,8 +351,8 @@ def summarize_spending(
                 # amount-parseable row, so using them here against a denominator
                 # derived from dated rows would make the payload contradict its
                 # own by_month breakdown.
-                dated_out = float(-dated.loc[dated["_amount"] < 0, "_amount"].sum())
-                dated_in = float(dated.loc[dated["_amount"] > 0, "_amount"].sum())
+                dated_out = float(dated["_out"].sum())
+                dated_in = float(dated["_in"].sum())
 
                 result["months_covered"] = months_covered
                 # First and last months are frequently partial exports, which
@@ -251,8 +373,8 @@ def summarize_spending(
                 result["average_monthly_outflow"] = round(dated_out / months_covered, 2)
                 result["average_monthly_net"] = round((dated_in - dated_out) / months_covered, 2)
                 if category_column:
-                    dated_spend = dated[dated["_amount"] < 0]
-                    dated_by_cat = -dated_spend.groupby(category_column)["_amount"].sum()
+                    dated_spend = dated[dated["_out"] > 0]
+                    dated_by_cat = dated_spend.groupby("_category")["_out"].sum()
                     result["by_category_monthly_average"] = {
                         str(k): round(float(v) / months_covered, 2)
                         for k, v in dated_by_cat.sort_values(ascending=False).items()

@@ -341,3 +341,194 @@ class TestPdfPageRange:
         assert "error" not in result
         assert result["pages_read"] == "2-4"
         assert result["page_count"] == 10
+
+
+@pytest.fixture
+def csv_file():
+    """Write arbitrary CSV content into the workspace and clean it up."""
+    written = []
+
+    def _write(name: str, content: str) -> str:
+        ensure_directories()
+        path = WORKSPACE_DIR / f"_pytest-{name}.csv"
+        path.write_text(content, encoding="utf-8")
+        written.append(path)
+        return f"/workspace/{path.name}"
+
+    yield _write
+    for path in written:
+        path.unlink(missing_ok=True)
+
+
+class TestSignConventions:
+    """Exports disagree about what a sign means and reading one wrong inverts
+    the whole budget. A card export with positive charges used to report a 100%
+    savings rate, an empty category breakdown and every charge as income.
+    """
+
+    CARD = (
+        "Date,Category,Amount\n"
+        "2026-01-05,Groceries,150.00\n"
+        "2026-01-06,Fuel,50.00\n"
+        "2026-01-20,Payment,-200.00\n"
+    )
+
+    SPLIT = (
+        "Date,Category,Debit,Credit\n"
+        "2026-01-03,Income,,4200.00\n"
+        "2026-01-04,Housing,1850.00,\n"
+        "2026-01-05,Groceries,150.00,\n"
+    )
+
+    def test_a_signed_export_is_detected_without_being_told(self, sample_csv):
+        result = _call(summarize_spending, path=sample_csv, amount_column="Amount")
+        assert result["sign_convention"] == "negative_outflow"
+
+    def test_an_all_positive_column_is_refused_rather_than_guessed(self, csv_file):
+        """The reported defect: this used to return savings_rate 1.0 silently."""
+        path = csv_file("cardonly", "Date,Amount\n2026-01-05,150.00\n2026-01-06,50.00\n")
+        result = _call(summarize_spending, path=path, amount_column="Amount")
+        assert "AmbiguousSignConvention" in result["error"]
+        assert "positive_outflow" in result["error"]
+
+    def test_positive_outflow_reads_charges_as_spending(self, csv_file):
+        path = csv_file("card", self.CARD)
+        result = _call(
+            summarize_spending,
+            path=path,
+            amount_column="Amount",
+            category_column="Category",
+            sign_convention="positive_outflow",
+        )
+        assert result["sign_convention"] == "positive_outflow"
+        assert result["total_outflow"] == pytest.approx(200.00)
+        assert result["total_inflow"] == pytest.approx(200.00)
+        assert result["by_category"]["Groceries"] == pytest.approx(150.00)
+        assert "Payment" not in result["by_category"]
+
+    def test_the_two_readings_are_genuine_inverses(self, csv_file):
+        """Guards the clip() branches against being written the same way twice."""
+        path = csv_file("card", self.CARD)
+        forced = _call(
+            summarize_spending,
+            path=path,
+            amount_column="Amount",
+            sign_convention="negative_outflow",
+        )
+        card = _call(
+            summarize_spending,
+            path=path,
+            amount_column="Amount",
+            sign_convention="positive_outflow",
+        )
+        assert forced["total_outflow"] == pytest.approx(card["total_inflow"])
+        assert forced["total_inflow"] == pytest.approx(card["total_outflow"])
+
+    def test_split_debit_and_credit_columns_are_read_as_magnitudes(self, csv_file):
+        path = csv_file("split", self.SPLIT)
+        result = _call(
+            summarize_spending,
+            path=path,
+            amount_column="Debit",
+            inflow_column="Credit",
+            category_column="Category",
+        )
+        assert result["sign_convention"] == "split_columns"
+        assert result["total_outflow"] == pytest.approx(2_000.00)
+        assert result["total_inflow"] == pytest.approx(4_200.00)
+        assert result["by_category"]["Housing"] == pytest.approx(1_850.00)
+
+    def test_a_blank_side_of_a_split_row_is_kept_not_dropped(self, csv_file):
+        """Blanks are how these exports encode direction; dropping them loses
+        every transaction in the file."""
+        path = csv_file("split", self.SPLIT)
+        result = _call(summarize_spending, path=path, amount_column="Debit", inflow_column="Credit")
+        assert result["transaction_count"] == 3
+
+    def test_an_all_negative_export_is_read_as_pure_spending(self, csv_file):
+        """The inverse reading would make it pure income, which no export is."""
+        path = csv_file("allneg", "Date,Amount\n2026-01-05,-150.00\n2026-01-06,-50.00\n")
+        result = _call(summarize_spending, path=path, amount_column="Amount")
+        assert result["total_outflow"] == pytest.approx(200.00)
+        assert result["total_inflow"] == pytest.approx(0.0)
+
+    def test_an_unknown_convention_is_rejected(self, sample_csv):
+        result = _call(
+            summarize_spending,
+            path=sample_csv,
+            amount_column="Amount",
+            sign_convention="whatever",
+        )
+        assert "sign_convention must be one of" in result["error"]
+
+    def test_the_convention_applied_is_always_reported(self, sample_csv):
+        """The skill checks this field to catch a reversed budget before writing one."""
+        result = _call(summarize_spending, path=sample_csv, amount_column="Amount")
+        assert result["sign_convention"] in (
+            "negative_outflow",
+            "positive_outflow",
+            "split_columns",
+        )
+
+    def test_a_missing_inflow_column_is_named_in_the_error(self, sample_csv):
+        result = _call(
+            summarize_spending, path=sample_csv, amount_column="Amount", inflow_column="Credit"
+        )
+        assert "inflow_column" in result["error"]
+        assert "Amount" in result["error"]
+
+
+class TestBlankCategories:
+    """`groupby` drops NaN keys by default, so uncategorized rows vanished from
+    the breakdown while staying in total_outflow -- a breakdown that silently
+    did not add up to the total printed beside it.
+    """
+
+    CONTENT = (
+        "Date,Category,Amount\n"
+        "2026-01-03,Income,4000.00\n"
+        "2026-01-04,Housing,-1000.00\n"
+        "2026-01-05,,-250.00\n"
+        "2026-01-06,   ,-150.00\n"
+    )
+
+    def test_blank_categories_are_bucketed_not_dropped(self, csv_file):
+        path = csv_file("blankcat", self.CONTENT)
+        result = _call(
+            summarize_spending, path=path, amount_column="Amount", category_column="Category"
+        )
+        assert result["by_category"]["Uncategorized"] == pytest.approx(400.00)
+
+    def test_the_breakdown_reconciles_with_the_total(self, csv_file):
+        path = csv_file("blankcat", self.CONTENT)
+        result = _call(
+            summarize_spending, path=path, amount_column="Amount", category_column="Category"
+        )
+        assert sum(result["by_category"].values()) == pytest.approx(result["total_outflow"])
+
+    def test_whitespace_only_categories_join_the_same_bucket(self, csv_file):
+        path = csv_file("blankcat", self.CONTENT)
+        result = _call(
+            summarize_spending, path=path, amount_column="Amount", category_column="Category"
+        )
+        assert "   " not in result["by_category"]
+        assert set(result["by_category"]) == {"Housing", "Uncategorized"}
+
+    def test_monthly_averages_include_the_bucket_too(self, csv_file):
+        path = csv_file("blankcat", self.CONTENT)
+        result = _call(
+            summarize_spending,
+            path=path,
+            amount_column="Amount",
+            category_column="Category",
+            date_column="Date",
+        )
+        assert result["by_category_monthly_average"]["Uncategorized"] == pytest.approx(400.00)
+
+
+class TestUnparseableDateColumn:
+    def test_a_column_with_no_dates_is_reported_rather_than_returning_nothing(self, csv_file):
+        """An empty by_month reads as 'no monthly pattern', not 'wrong column'."""
+        path = csv_file("baddate", "Ref,Amount\nINV-001,4000.00\nINV-002,-1000.00\n")
+        result = _call(summarize_spending, path=path, amount_column="Amount", date_column="Ref")
+        assert "no parseable dates" in result["error"]

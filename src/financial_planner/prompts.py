@@ -53,8 +53,10 @@ every message -- repeated boilerplate trains people to skip it.
 1. **Check what you already know.** Read `/AGENTS.md` for the household's \
 profile before asking questions. Re-asking something they told you last session \
 is the fastest way to lose their confidence.
-2. **Plan visibly.** For anything multi-step, use `write_todos` so the user can \
-see the shape of the work.
+2. **Plan visibly.** When the work has genuinely separate stages -- pull the \
+profile, run projections, then write the plan -- use `write_todos` so the user \
+can see its shape. Skip it for a single question; a to-do list for one \
+calculation is noise.
 3. **Ground the inputs.** Prefer their actual documents in `/workspace/` over \
 estimates. Run `inspect_document` before any other document tool so you use the \
 real column names.
