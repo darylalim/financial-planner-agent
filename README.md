@@ -219,7 +219,7 @@ on unrelated quantities.
 ## Development
 
 ```bash
-uv run pytest          # 283 tests, no API key or network required
+uv run pytest          # 284 tests, no API key or network required
 uv run ruff check .
 uv run ruff format .
 ```

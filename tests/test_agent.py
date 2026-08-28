@@ -150,9 +150,7 @@ class TestHarnessProfileAssumptions:
     ``get_model_provider`` wants ``._get_ls_params()``. A `str` has neither, so
     both come back ``None``, every registry branch is guarded off, and the call
     returns an empty ``HarnessProfile()`` for *any* model -- reducing the
-    assertions below to ``{} == {}``. `create_deep_agent` resolves the instance
-    and keeps the original string as the spec (``graph.py``: ``resolve_model``,
-    then ``_harness_profile_for_model(model, _model_spec)``), so mirror that.
+    assertions below to ``{} == {}``.
     """
 
     #: A spec no provider serves, for registering a profile of our own against.
@@ -160,37 +158,47 @@ class TestHarnessProfileAssumptions:
 
     @staticmethod
     def _profile(spec: str) -> Any:
-        """Resolve a harness profile the way ``create_deep_agent`` does.
+        """Resolve a harness profile for ``spec`` the way `create_deep_agent` does.
 
-        The registry lookup keys off ``spec``; the instance in the first slot
-        only matters if deepagents ever drops that short-circuit. It is always
-        resolved from DEFAULT_MODEL so that a real one is present even for
-        SENTINEL_SPEC, which no provider could resolve.
+        `create_deep_agent` resolves the model instance and keeps the original
+        string as the spec (``graph.py``: ``resolve_model``, then
+        ``_harness_profile_for_model(model, _model_spec)``). Only the spec
+        reaches the registry -- the lookup returns before the instance is read
+        -- so the fake stands in for it. Resolving DEFAULT_MODEL for real would
+        need the configured provider's package and key, breaking this module's
+        no-API-key promise for every non-Anthropic FINANCIAL_PLANNER_MODEL, and
+        SENTINEL_SPEC has no provider to resolve at all.
+
+        That leaves the fake unable to resolve anything if deepagents ever drops
+        the short-circuit -- which is what ``test_the_guard_above_is_not_vacuous``
+        is there to catch.
         """
-        from deepagents._models import resolve_model
         from deepagents.graph import _harness_profile_for_model
 
-        return _harness_profile_for_model(resolve_model(DEFAULT_MODEL), spec)
+        return _harness_profile_for_model(ToolBindableFake(messages=iter([])), spec)
 
-    def test_the_configured_model_has_no_profile_overrides_to_drop(self) -> None:
-        profile = self._profile(DEFAULT_MODEL)
-        assert dict(profile.tool_description_overrides) == {}
-        assert set(profile.excluded_tools) == set()
+    @pytest.fixture
+    def sentinel_profile(self) -> Any:
+        """Register SENTINEL_SPEC, then put the global registry back as it was.
 
-    def test_the_guard_above_is_not_vacuous(self) -> None:
-        """The assertions above have to be able to fail.
+        ``register_harness_profile`` merges into a module-global dict and there
+        is no unregister. Leaving the key behind is not inert:
+        ``_has_any_harness_profile()`` is ``keys() - bootstrap keys``, so one
+        non-builtin registration flips it True and promotes deepagents' "no
+        harness profile matched" breadcrumb from debug to warning for every
+        later test that builds an agent from a model instance.
 
-        They could not: the spec went into the model argument, so the lookup
-        returned an empty profile whatever FINANCIAL_PLANNER_MODEL was set to,
-        and the guard passed even against the shipped profiles that do set
-        overrides. Registering one under a spec of our own and reading it back
-        through the same call is what keeps that from going quiet again.
-
-        Registration is additive and global, so the key is namespaced to this
-        test rather than layered onto a real provider's.
+        The builtins are loaded *before* the snapshot is taken, because their
+        bootstrap is one-shot: restoring over an empty snapshot would drop them
+        for the rest of the session with nothing to reload them. The dict is
+        mutated in place rather than rebound, since deepagents holds a
+        reference to that object.
         """
         from deepagents import HarnessProfile, register_harness_profile
+        from deepagents.profiles.harness import harness_profiles
 
+        harness_profiles._ensure_harness_profiles_loaded()
+        snapshot = dict(harness_profiles._HARNESS_PROFILES)
         register_harness_profile(
             self.SENTINEL_SPEC,
             HarnessProfile(
@@ -198,7 +206,24 @@ class TestHarnessProfileAssumptions:
                 excluded_tools={"edit_file"},
             ),
         )
+        yield
+        harness_profiles._HARNESS_PROFILES.clear()
+        harness_profiles._HARNESS_PROFILES.update(snapshot)
 
+    def test_the_configured_model_has_no_profile_overrides_to_drop(self) -> None:
+        profile = self._profile(DEFAULT_MODEL)
+        assert dict(profile.tool_description_overrides) == {}
+        assert set(profile.excluded_tools) == set()
+
+    def test_the_guard_above_is_not_vacuous(self, sentinel_profile: Any) -> None:
+        """The assertions above have to be able to fail.
+
+        They could not: the spec went into the model argument, so the lookup
+        returned an empty profile whatever FINANCIAL_PLANNER_MODEL was set to,
+        and the guard passed even against the shipped profiles that do set
+        overrides. Registering one under a spec of our own and reading it back
+        through the same call is what keeps that from going quiet again.
+        """
         profile = self._profile(self.SENTINEL_SPEC)
         assert dict(profile.tool_description_overrides) == {"read_file": "sentinel"}
         assert set(profile.excluded_tools) == {"edit_file"}
