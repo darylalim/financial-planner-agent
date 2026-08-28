@@ -25,6 +25,16 @@ agent_home/workspace/*
 # committed skills. Recreated from a template on first run.
 agent_home/AGENTS.md
 
+# Written by the Deep Agents summarization middleware, which is part of the
+# default stack and offloads through this project's on-disk backend. With
+# FilesystemBackend the artifacts root is "/", which virtual_mode re-roots at
+# agent_home/ -- so evicted turns and oversized tool results land here as
+# markdown. That is the same statement data as workspace/, one directory up
+# from where the existing rules stop, and it appears only once a conversation
+# runs long enough to summarize.
+agent_home/conversation_history/
+agent_home/large_tool_results/
+
 # Persisted cross-session memory (SQLite store/checkpointer)
 *.sqlite
 *.sqlite3
