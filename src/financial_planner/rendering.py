@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import re
 
-__all__ = ["escape_dollars"]
+__all__ = ["escape_dollars", "escape_markdown"]
 
 # Code spans inside a single line. Fenced blocks are recognised by the line
 # scanner below, so this only has to cope with the inline forms; the longest
@@ -178,3 +178,30 @@ def _escape_outside_spans(line: str) -> str:
         position = match.end()
     parts.append(_UNESCAPED_DOLLAR.sub(r"\\$", line[position:]))
     return "".join(parts)
+
+
+# The markdown characters that are actually active -- not every ASCII
+# punctuation mark CommonMark permits an escape for. Escaping the full set is
+# correct under a strict reader (``\,`` is just ``,``), but renderers vary in
+# how much of it they honour and one that does not would show the user a literal
+# backslash inside their own filename. So: the set every renderer escapes, plus
+# ``$`` for Streamlit's LaTeX and ``&`` for HTML entities.
+_MARKDOWN_ACTIVE = re.compile(r"([\\`*_{}\[\]()#+\-.!|<>~$&])")
+
+
+def escape_markdown(text: str) -> str:
+    """Render an untrusted string as literal text.
+
+    Distinct from :func:`escape_dollars` on purpose. That one prepares model
+    *prose*, which is markdown the user is meant to see rendered, so it escapes
+    the one character that breaks and steps around code. This is for strings
+    that are *data* -- an uploaded filename, an exception message -- which reach
+    ``st.warning`` and ``st.error``, both of which render markdown.
+
+    Escaping only ``$`` there covers the LaTeX case and leaves every other
+    metacharacter live: a file named ``a`b.csv`` opens a code span that swallows
+    the rest of the sentence, ``**Q1**.csv`` renders bold, and a name containing
+    ``[x](y)`` renders as a link -- so the user is told how to recover a file
+    they just lost in a sentence that is garbled or cut off.
+    """
+    return _MARKDOWN_ACTIVE.sub(r"\\\1", text)

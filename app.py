@@ -25,7 +25,7 @@ from financial_planner.config import (
     missing_required_keys,
 )
 from financial_planner.envelope import redact
-from financial_planner.rendering import escape_dollars
+from financial_planner.rendering import escape_dollars, escape_markdown
 from financial_planner.streaming import Token, ToolEnd, ToolStart, stream_agent_events
 from financial_planner.uploads import save_uploads
 
@@ -207,9 +207,12 @@ elif prompt:
     user_text = (prompt.text or "").strip() or None
 
 if st.session_state.unsaved_uploads:
-    # escape_dollars because the name is browser-supplied and st.warning renders
-    # markdown, so a file called "$100 to $200.csv" would arrive as LaTeX.
-    unsaved = ", ".join(escape_dollars(n) for n in st.session_state.unsaved_uploads)
+    # escape_markdown, not escape_dollars: the name is browser-supplied and
+    # st.warning renders markdown, so "$100 to $200.csv" arrives as LaTeX -- but
+    # so does "a`b.csv", which opens a code span that swallows the rest of the
+    # sentence telling the user how to recover the file. A filename is data, not
+    # prose, so nothing in it should render.
+    unsaved = ", ".join(escape_markdown(n) for n in st.session_state.unsaved_uploads)
     st.warning(
         f"Could not save: {unsaved}. The name carries no usable filename; "
         "rename the file and attach it again.",
@@ -286,10 +289,13 @@ if user_text or uploaded_names:
             # place a model-client error surfaces, and those quote the failing
             # request. Streamlit renders it and it may be screenshotted.
             detail = redact(f"{type(exc).__name__}: {exc}")
-            # escape_dollars because st.error renders markdown too: an error
-            # quoting two dollar amounts would render the span between them as
-            # LaTeX, exactly as it would in an answer.
-            st.error(escape_dollars(detail), icon=":material/error:")
+            # escape_markdown for the same reason as the filename above: this is
+            # a raw exception string, not prose, and st.error renders markdown.
+            # An error quoting two dollar amounts renders the span between them
+            # as LaTeX, and one quoting a backtick or a bracket -- which HTTP
+            # clients do when they echo a request back -- mangles or truncates
+            # the only description of the failure the user gets.
+            st.error(escape_markdown(detail), icon=":material/error:")
             # Nothing is sent to the *checkpointer* -- it already holds whatever
             # partial state the graph committed. But session_state.messages is
             # display only (see the module docstring), and leaving it without a
