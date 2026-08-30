@@ -282,9 +282,18 @@ class TestCheckpointDatabaseLocation:
         does not move -- so this suite and ``scripts/live_check.py``, which exist
         precisely to run against a throwaway home, still wrote their
         conversations into the real repository database.
+
+        The containment check this used to carry -- that the database is not
+        under ``PROJECT_ROOT`` -- asserted a property of the machine rather than
+        of the code. With ``TMPDIR`` inside the checkout, which ``pytest
+        --basetemp`` and many CI images arrange, conftest's throwaway home *is*
+        inside ``PROJECT_ROOT`` and the assertion failed with nothing wrong. It
+        also compared unresolved paths, unlike its sibling above, which
+        documents that resolution as load-bearing across macOS's symlinked
+        ``/var``. The equality below pins the regression exactly on its own,
+        since ``AGENT_HOME`` here is the throwaway home, not the repository.
         """
         assert CHECKPOINT_DB == AGENT_HOME.parent / "planner_state.sqlite"
-        assert not CHECKPOINT_DB.is_relative_to(PROJECT_ROOT)
 
 
 class TestLiveCheckRefusesAVacuousRun:
