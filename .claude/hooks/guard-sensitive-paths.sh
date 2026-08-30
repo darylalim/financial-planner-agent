@@ -44,10 +44,21 @@ case "$p" in
     deny "This file holds live API keys and is gitignored, so an overwrite is unrecoverable. Ask the user to edit it themselves; you may edit .env.example instead." ;;
 esac
 
-# config.py:40 -- CHECKPOINT_DB is a single fixed path, so match it exactly. A
-# broad *.sqlite|*.db rule refused test fixtures and any scratch database
-# anywhere on the filesystem, with a message describing a file they were not.
-[ "$p" = "$root/planner_state.sqlite" ] && \
+# CHECKPOINT_DB, mirrored from config.py: the historic name beside the default
+# home, and named after the home once it is redirected. Both branches, because
+# guarding only the repo-root default protects a path holding no database for
+# anyone who has moved their home -- while the real one, holding every balance
+# and account detail the household ever typed, goes unguarded.
+#
+# Still an exact match rather than *.sqlite|*.db: the broad rule refused test
+# fixtures and any scratch database anywhere on the filesystem, with a message
+# describing a file they were not.
+if [ "$home" = "$(hook_abs "$root/agent_home")" ]; then
+  db="$root/planner_state.sqlite"
+else
+  db="$(dirname "$home")/$(basename "$home")-state.sqlite"
+fi
+[ "$p" = "$db" ] && \
   deny "This is the SQLite checkpointer holding real planning conversations. It is binary; a text write corrupts it."
 
 case "$p" in

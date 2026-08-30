@@ -32,7 +32,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 # Overridable so the live check can point at a throwaway home. Without this,
 # running it against a real installation would overwrite the household's
 # AGENTS.md with test data. Must be set before this module is first imported.
-AGENT_HOME = Path(os.getenv("FINANCIAL_PLANNER_HOME") or PROJECT_ROOT / "agent_home")
+# Resolved, so a relative override behaves. `FINANCIAL_PLANNER_HOME=myhome`
+# left AGENT_HOME relative, and CHECKPOINT_DB below reads `.parent` off it --
+# which for a bare name is `Path(".")`, dropping the household's transcript into
+# whatever directory streamlit happened to be launched from.
+_DEFAULT_AGENT_HOME = (PROJECT_ROOT / "agent_home").resolve()
+AGENT_HOME = Path(os.getenv("FINANCIAL_PLANNER_HOME") or _DEFAULT_AGENT_HOME).resolve()
 WORKSPACE_DIR = AGENT_HOME / "workspace"
 SKILLS_DIR = AGENT_HOME / "skills"
 # A *sibling* of AGENT_HOME, not a path under PROJECT_ROOT: pinning it to the
@@ -47,7 +52,18 @@ SKILLS_DIR = AGENT_HOME / "skills"
 # FilesystemBackend root, so a database holding the full transcript of the
 # household's finances would become readable by the agent itself -- the exact
 # boundary the module docstring above exists to draw.
-CHECKPOINT_DB = AGENT_HOME.parent / "planner_state.sqlite"
+#
+# Named after the home once the home is redirected, because the parent alone is
+# not unique: /data/homes/alice and /data/homes/bob both resolved to
+# /data/homes/planner_state.sqlite, so two households shared one thread store
+# and either could resume the other's conversation by thread id. The default
+# home keeps the historic filename, so an existing installation's saved
+# conversations are not orphaned by this.
+CHECKPOINT_DB = (
+    PROJECT_ROOT / "planner_state.sqlite"
+    if AGENT_HOME == _DEFAULT_AGENT_HOME
+    else AGENT_HOME.parent / f"{AGENT_HOME.name}-state.sqlite"
+)
 
 # --- Virtual paths, as the agent sees them ----------------------------------
 # These are relative to AGENT_HOME because virtual_mode=True re-roots the

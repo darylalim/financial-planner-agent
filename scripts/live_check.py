@@ -38,7 +38,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 # Nested one level down: CHECKPOINT_DB is a sibling of AGENT_HOME (outside it,
 # so the agent cannot read its own transcript), so a home with no parent of its
 # own would drop the database into the shared system temp root, outliving the
-# run and colliding with concurrent ones. The atexit below removes the parent.
+# run. It is named after the home, so concurrent runs no longer collide there --
+# the leak is what nesting prevents. The atexit below removes the parent.
 _LIVE_ROOT = Path(tempfile.mkdtemp(prefix="planner-live-"))
 _LIVE_HOME = _LIVE_ROOT / "home"
 _LIVE_HOME.mkdir()

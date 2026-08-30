@@ -22,6 +22,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -293,7 +294,35 @@ class TestCheckpointDatabaseLocation:
         ``/var``. The equality below pins the regression exactly on its own,
         since ``AGENT_HOME`` here is the throwaway home, not the repository.
         """
-        assert CHECKPOINT_DB == AGENT_HOME.parent / "planner_state.sqlite"
+        assert CHECKPOINT_DB == AGENT_HOME.parent / f"{AGENT_HOME.name}-state.sqlite"
+
+    def test_two_homes_under_one_parent_do_not_share_a_database(self) -> None:
+        """The parent alone is not unique, so the name carries the home.
+
+        ``AGENT_HOME.parent / "planner_state.sqlite"`` sent
+        ``/data/homes/alice`` and ``/data/homes/bob`` to the *same* file: two
+        households sharing one thread store, either able to resume the other's
+        conversation by thread id. Recomputed here rather than reimported --
+        ``config`` freezes AGENT_HOME at import and this suite has already
+        imported it.
+        """
+        homes = [Path("/data/homes/alice"), Path("/data/homes/bob")]
+        databases = {home.parent / f"{home.name}-state.sqlite" for home in homes}
+        assert len(databases) == len(homes)
+
+    def test_the_default_home_keeps_the_historic_database_name(self) -> None:
+        """An existing installation's saved conversations are not orphaned.
+
+        The default resolves to ``<repo>/planner_state.sqlite``, the name it has
+        always had, so only a *redirected* home takes the home-derived name.
+        """
+        default_home = (PROJECT_ROOT / "agent_home").resolve()
+        expected = (
+            PROJECT_ROOT / "planner_state.sqlite"
+            if AGENT_HOME == default_home
+            else AGENT_HOME.parent / f"{AGENT_HOME.name}-state.sqlite"
+        )
+        assert CHECKPOINT_DB == expected
 
 
 class TestLiveCheckRefusesAVacuousRun:

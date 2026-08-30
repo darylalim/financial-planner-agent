@@ -24,9 +24,10 @@ from pathlib import Path
 # The home is a *child* of the throwaway directory, not the directory itself.
 # CHECKPOINT_DB is derived as a sibling of AGENT_HOME -- deliberately outside
 # it, so the agent cannot read its own transcript -- so a home with no parent of
-# its own puts the database in the shared system temp root, where it survives
-# this run and is shared with every other one. Nesting gives the sibling
-# somewhere to land that the cleanup below actually removes.
+# its own puts the database in the shared system temp root. It is named after
+# the home, so it no longer *collides* with a concurrent run; it would simply
+# outlive this one. Nesting gives the sibling somewhere to land that the cleanup
+# below actually removes.
 _TEST_ROOT = Path(tempfile.mkdtemp(prefix="planner-tests-"))
 _TEST_HOME = _TEST_ROOT / "home"
 _TEST_HOME.mkdir()
