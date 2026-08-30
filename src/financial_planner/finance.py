@@ -394,11 +394,12 @@ def payoff_debts(
                 target = max(remaining, key=lambda d: d.rate)
             else:
                 target = min(remaining, key=lambda d: d.balance)
+            # Strictly positive: `budget > 0` is the loop condition and
+            # `target.balance > 0.005` is what put the target in `remaining`.
+            # Termination does not rest on a zero-payment guard, then -- each
+            # pass either exhausts the budget or drops one debt out of
+            # `remaining`, which bounds the loop at len(working) + 1 passes.
             pay = min(budget, target.balance)
-            if pay <= 0:
-                # Nothing else in this loop changes, so a pass that pays out
-                # nothing would spin forever. Bail rather than hang.
-                break
             target.balance -= pay
             budget -= pay
 
