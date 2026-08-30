@@ -78,6 +78,28 @@ def redact(message: str) -> str:
     return message
 
 
+def _redact_payload(value: Any) -> Any:
+    """Redact the strings inside a payload, leaving its structure alone.
+
+    This has to run *before* serialization. ``json.dumps`` defaults to
+    ``ensure_ascii=True`` and escapes quotes and backslashes, so a key holding
+    any of those appears in the serialized text in escaped form and a substring
+    replacement over that text never finds it. `err` was unaffected because it
+    redacts the raw message; only the success path serialized first.
+
+    Keys are left alone deliberately: every payload here is built with literal
+    keys by our own code, so a secret can only arrive in a value, and redacting
+    keys could collapse two distinct ones into a single entry.
+    """
+    if isinstance(value, str):
+        return redact(value)
+    if isinstance(value, dict):
+        return {key: _redact_payload(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_redact_payload(item) for item in value]
+    return value
+
+
 def ok(payload: dict[str, Any]) -> str:
     """Serialize a successful tool result.
 
@@ -89,10 +111,14 @@ def ok(payload: dict[str, Any]) -> str:
     exception: search snippets and other relayed upstream text ride back on the
     *successful* path too, and the redaction guarantee the README makes is over
     everything a tool returns, not just what it returns when it breaks.
-    Redaction runs on the serialized text so the shape `_is_error_result` reads
-    is settled first and left untouched.
+    Redaction runs over the payload's strings *before* serialization, because
+    `json.dumps` escapes non-ASCII, quotes and backslashes, and a replacement
+    over the escaped text would walk straight past a key containing one. The
+    serialized text is swept again afterwards as a backstop, since ``default=str``
+    produces strings the first pass never saw. Neither pass touches the keys or
+    the separators `_is_error_result` reads.
     """
-    return redact(json.dumps(payload, separators=(",", ":"), default=str))
+    return redact(json.dumps(_redact_payload(payload), separators=(",", ":"), default=str))
 
 
 def err(problem: Exception | str) -> str:

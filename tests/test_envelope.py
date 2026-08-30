@@ -145,9 +145,26 @@ class TestSuccessIsRedactedToo:
         assert payload["total_outflow"] == 1200.0
         assert payload["note"] == "saw ***"
 
+    @pytest.mark.parametrize(
+        "secret",
+        ["tvly-caf\u00e9-NOTAREALKEY", 'tvly-"quoted"-NOTAREALKEY', "tvly-back\\slash-NOTAREAL"],
+    )
+    def test_ok_strips_a_key_json_would_escape(self, monkeypatch, secret):
+        """Regression: `ok` redacted the *serialized* text while `err` redacted
+        the raw message, so any key holding a character `json.dumps` escapes --
+        non-ASCII under ensure_ascii, a quote, a backslash -- survived on the
+        success path and failed to survive on the error path. The tests above
+        all use ASCII-safe keys, which is why the asymmetry went unseen.
+        """
+        monkeypatch.setattr(config, "TAVILY_API_KEY", secret)
+        payload = json.loads(envelope.ok({"snippet": f"echoed {secret} back"}))
+        assert payload["snippet"] == "echoed *** back"
+
     def test_redacting_ok_does_not_disturb_the_serialization_contract(self, keys):
         """Compact separators and `default=str` are what `_is_error_result`
-        and the pandas-carrying tools depend on; redaction runs after them."""
+        and the pandas-carrying tools depend on; neither redaction pass -- the
+        one over the payload's strings nor the backstop over the serialized
+        text -- touches the keys or the separators."""
         import pandas as pd
 
         serialized = envelope.ok({"month": pd.Period("2026-01"), "n": 1})
