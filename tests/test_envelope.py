@@ -90,6 +90,71 @@ class TestRedaction:
         assert "***" in envelope.redact("failed with tvly-rotated-key-value")
 
 
+class TestSecretsAreDiscoveredNotListed:
+    """Regression: redaction scrubbed a hardcoded two-name tuple.
+
+    A third credential added to config.py leaked until someone remembered to
+    extend that tuple -- a maintenance step with no failing test behind it.
+    Secrets are now recognised by the shape of their name on `config`.
+    """
+
+    @pytest.mark.parametrize(
+        "name", ["OPENAI_API_KEY", "FRED_KEY", "PLAID_TOKEN", "WEBHOOK_SECRET"]
+    )
+    def test_a_newly_added_credential_is_redacted(self, monkeypatch, name):
+        monkeypatch.setattr(config, name, "brand-new-credential-value", raising=False)
+        assert "***" in envelope.redact(f"401 for brand-new-credential-value via {name}")
+
+    def test_a_short_new_credential_is_still_ignored(self, monkeypatch):
+        """The eight-character floor holds for discovered names too: a short
+        value would replace between every character of the message."""
+        monkeypatch.setattr(config, "FRED_KEY", "abc", raising=False)
+        assert envelope.redact("abc the quick brown fox") == "abc the quick brown fox"
+
+    def test_a_non_string_attribute_is_not_mistaken_for_a_secret(self, monkeypatch):
+        """`config` holds Paths and None alongside the keys; neither has a
+        length to floor or a value to replace."""
+        monkeypatch.setattr(config, "CACHE_KEY", None, raising=False)
+        monkeypatch.setattr(config, "LEDGER_KEY", 12345678, raising=False)
+        assert envelope.redact("nothing to strip") == "nothing to strip"
+
+    def test_a_secret_containing_another_is_replaced_whole(self, monkeypatch):
+        """Longest first, so the longer key is not left as a redacted stub."""
+        monkeypatch.setattr(config, "TAVILY_API_KEY", "tvly-shared-prefix")
+        monkeypatch.setattr(config, "ANTHROPIC_API_KEY", "tvly-shared-prefix-and-more")
+        assert envelope.redact("auth failed for tvly-shared-prefix-and-more") == (
+            "auth failed for ***"
+        )
+
+
+class TestSuccessIsRedactedToo:
+    """Regression: only `err` redacted, so the guarantee the README makes --
+    redaction over everything a tool returns -- was false on the success path.
+    Search snippets and other relayed upstream text ride back through `ok`.
+    """
+
+    def test_ok_strips_a_configured_key(self, keys):
+        payload = {"snippet": f"curl -H 'Authorization: {TAVILY}' https://api.tavily.com"}
+        assert TAVILY not in envelope.ok(payload)
+
+    def test_ok_strips_a_key_nested_in_the_payload(self, keys):
+        assert ANTHROPIC not in envelope.ok({"results": [{"body": f"key={ANTHROPIC}"}]})
+
+    def test_the_rest_of_the_payload_survives_redaction(self, keys):
+        payload = json.loads(envelope.ok({"total_outflow": 1200.0, "note": f"saw {TAVILY}"}))
+        assert payload["total_outflow"] == 1200.0
+        assert payload["note"] == "saw ***"
+
+    def test_redacting_ok_does_not_disturb_the_serialization_contract(self, keys):
+        """Compact separators and `default=str` are what `_is_error_result`
+        and the pandas-carrying tools depend on; redaction runs after them."""
+        import pandas as pd
+
+        serialized = envelope.ok({"month": pd.Period("2026-01"), "n": 1})
+        assert serialized == '{"month":"2026-01","n":1}'
+        assert not _is_error_result(serialized)
+
+
 class TestEveryToolModuleSharesTheEnvelope:
     """Four copies of these helpers had already drifted -- one omitted the
     exception type, and only one redacted. Import identity is the cheapest way

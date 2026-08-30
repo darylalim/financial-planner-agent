@@ -11,6 +11,7 @@ No model is invoked: the agent is only built when a message is submitted.
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from streamlit.testing.v1 import AppTest
@@ -70,6 +71,59 @@ def offline_turn(monkeypatch):
     )
 
 
+@pytest.fixture
+def failing_turn(monkeypatch):
+    """Let a turn start and then blow up the way a dropped connection would."""
+    from financial_planner import agent as agent_module
+    from financial_planner import streaming as streaming_module
+
+    monkeypatch.setattr(agent_module, "build_agent", lambda **_: object())
+    monkeypatch.setattr(agent_module, "build_checkpointer", lambda: None)
+
+    def _explode(_agent, _messages, _config):
+        raise RuntimeError("upstream refused a quote for $2,000 of $VOO")
+
+    monkeypatch.setattr(streaming_module, "stream_agent_events", _explode)
+
+
+class _FakeUpload:
+    """Stands in for Streamlit's UploadedFile (only .name and .getvalue used)."""
+
+    def __init__(self, name: str, data: bytes = b"col\n1\n") -> None:
+        self.name = name
+        self._data = data
+
+    def getvalue(self) -> bytes:
+        return self._data
+
+
+@pytest.fixture
+def attach(monkeypatch, tmp_path):
+    """Submit the chat input with files attached, into a throwaway workspace.
+
+    AppTest can set the chat input's text but has no way to attach files: the
+    real widget resolves them through the server's upload manager, which AppTest
+    does not run. Replacing ``st.chat_input`` for a single call is the smallest
+    stand-in, and returning None afterwards matches the real widget -- a
+    submission is consumed once, so the post-turn rerun must not resubmit it.
+    """
+    import streamlit as st_module
+
+    from financial_planner import config as config_module
+
+    monkeypatch.setattr(config_module, "WORKSPACE_DIR", tmp_path)
+
+    def _attach(*names: str, text: str = "") -> None:
+        pending = [SimpleNamespace(text=text, files=[_FakeUpload(n) for n in names])]
+
+        def fake_chat_input(*_args, **_kwargs):
+            return pending.pop() if pending else None
+
+        monkeypatch.setattr(st_module, "chat_input", fake_chat_input)
+
+    return _attach
+
+
 def _raw_options(app: AppTest) -> list[str]:
     """Reconstruct the option values a real click sends.
 
@@ -107,6 +161,70 @@ class TestSuggestionChips:
         app = _run()
         app.pills[0].set_value(_raw_options(app)[0]).run()
         assert len(app.pills) == 0
+
+
+class TestUploadsThatCannotBeSaved:
+    """Regression: an attachment whose name has no usable final component was
+    dropped with nothing said, so the user watched their file vanish.
+    """
+
+    def test_a_skipped_upload_is_named_in_a_warning(self, with_api_key, attach):
+        attach("..")
+        app = _run()
+        assert not app.exception, [e.value for e in app.exception]
+        assert any(".." in w.value for w in app.warning)
+
+    def test_a_usable_attachment_is_still_saved_alongside_it(
+        self, with_api_key, offline_turn, attach, tmp_path
+    ):
+        """And the warning survives the redraw the finished turn triggers."""
+        attach("..", "statement.csv")
+        app = _run()
+        assert (tmp_path / "statement.csv").exists()
+        assert any(".." in w.value for w in app.warning)
+
+
+class TestFailedTurns:
+    """Regression: a turn that raised left a user message with no reply, and the
+    st.error vanished on the next rerun, so the transcript read as if the agent
+    had ignored the question.
+    """
+
+    def test_a_failure_is_recorded_in_the_transcript(self, with_api_key, failing_turn):
+        app = _run()
+        app.pills[0].set_value(_raw_options(app)[0]).run()
+        assert [m["role"] for m in app.session_state["messages"]] == ["user", "assistant"]
+        assert "RuntimeError" in app.session_state["messages"][-1]["content"]
+
+    def test_the_error_is_escaped_before_it_reaches_markdown(self, with_api_key, failing_turn):
+        """st.error renders markdown, so "$2,000 of $VOO" would LaTeX-ify."""
+        app = _run()
+        app.pills[0].set_value(_raw_options(app)[0]).run()
+        assert any("\\$2,000" in e.value for e in app.error)
+
+
+class TestStreamedAnswerIsComplete:
+    def test_every_token_survives_the_render_throttle(self, with_api_key, monkeypatch):
+        """The paint is throttled, so the final flush must still be exact.
+
+        The last tokens of an answer are usually below the redraw threshold, and
+        an accumulator that forgot them would silently truncate the reply.
+        """
+        from financial_planner import agent as agent_module
+        from financial_planner import streaming as streaming_module
+
+        pieces = ["A ", "sh", "ort ", "answer", "."]
+        monkeypatch.setattr(agent_module, "build_agent", lambda **_: object())
+        monkeypatch.setattr(agent_module, "build_checkpointer", lambda: None)
+        monkeypatch.setattr(
+            streaming_module,
+            "stream_agent_events",
+            lambda *_: iter([streaming_module.Token(p) for p in pieces]),
+        )
+
+        app = _run()
+        app.pills[0].set_value(_raw_options(app)[0]).run()
+        assert app.session_state["messages"][-1]["content"] == "".join(pieces)
 
 
 class TestThreadIdentity:

@@ -58,7 +58,7 @@ def _check_rate(name: str, value: float) -> None:
         )
 
 
-def _check_positive(name: str, value: float) -> None:
+def _check_non_negative(name: str, value: float) -> None:
     if value < 0:
         raise ValueError(f"{name} must be non-negative, got {value}")
 
@@ -144,8 +144,8 @@ def project_portfolio(
     Returns:
         A :class:`ProjectionResult` with both nominal and real final balances.
     """
-    _check_positive("starting_balance", starting_balance)
-    _check_positive("monthly_contribution", monthly_contribution)
+    _check_non_negative("starting_balance", starting_balance)
+    _check_non_negative("monthly_contribution", monthly_contribution)
     _check_rate("annual_return", annual_return)
     _check_rate("annual_inflation", annual_inflation)
     _check_rate("annual_contribution_growth", annual_contribution_growth)
@@ -201,8 +201,8 @@ def required_monthly_contribution(
     Returns ``0.0`` when the starting balance already compounds past the target
     on its own.
     """
-    _check_positive("target_amount", target_amount)
-    _check_positive("starting_balance", starting_balance)
+    _check_non_negative("target_amount", target_amount)
+    _check_non_negative("starting_balance", starting_balance)
     _check_rate("annual_return", annual_return)
     if not 0 < years <= _MAX_YEARS:
         raise ValueError(f"years must be in (0, {_MAX_YEARS}], got {years}")
@@ -235,8 +235,11 @@ def amortize_loan(*, principal: float, apr: float, years: float) -> Amortization
 
     Uses the lender convention ``apr / 12`` so the monthly payment matches the
     figure on the user's statement.
+
+    A fractional ``years`` is rounded to the nearest whole number of months, so
+    a 30.5-year term is amortized over 366 months.
     """
-    _check_positive("principal", principal)
+    _check_non_negative("principal", principal)
     _check_rate("apr", apr)
     if not 0 < years <= _MAX_YEARS:
         raise ValueError(f"years must be in (0, {_MAX_YEARS}], got {years}")
@@ -251,9 +254,16 @@ def amortize_loan(*, principal: float, apr: float, years: float) -> Amortization
         payment = principal / n
     else:
         payment = principal * (r * (1.0 + r) ** n) / ((1.0 + r) ** n - 1.0)
+    # Round the payment *before* deriving the totals. The borrower writes a
+    # cheque for the rounded figure every month, so that is the number the
+    # totals have to be built from; totalling the unrounded payment leaves the
+    # three reported numbers irreconcilable (on $300k/6%/30y it reports
+    # $1,798.65 alongside a total of $647,514.57, while 1798.65 * 360 is
+    # $647,514.00) and a user with a calculator can see the discrepancy.
+    payment = round(payment, 2)
     total = payment * n
     return AmortizationResult(
-        monthly_payment=round(payment, 2),
+        monthly_payment=payment,
         total_paid=round(total, 2),
         total_interest=round(total - principal, 2),
         months=n,
@@ -324,8 +334,8 @@ def payoff_debts(
             raise ValueError(
                 f"each debt needs name/balance/apr/minimum_payment; missing {exc}"
             ) from exc
-        _check_positive(f"{entry.name}.balance", entry.balance)
-        _check_positive(f"{entry.name}.minimum_payment", entry.minimum)
+        _check_non_negative(f"{entry.name}.balance", entry.balance)
+        _check_non_negative(f"{entry.name}.minimum_payment", entry.minimum)
         working.append(entry)
 
     total_minimum = sum(d.minimum for d in working)
@@ -359,15 +369,27 @@ def payoff_debts(
             d.balance -= pay
             budget -= pay
 
-        # Everything left goes to the single target debt. This is what makes
-        # both strategies "snowball": a cleared debt's payment rolls forward.
-        remaining = [d for d in working if d.balance > 0.005]
-        if remaining and budget > 0:
+        # Everything left goes to the target debt, and cascades onward the
+        # moment that debt clears. This is what makes both strategies
+        # "snowball": a cleared debt's payment rolls forward -- and it has to
+        # roll forward *within* the month too. Applying the leftover to exactly
+        # one debt and stopping strands the remainder until next month while
+        # every other balance keeps accruing, which is money the user handed
+        # over and got no credit for. The target is re-selected on each pass, so
+        # the strategy ordering still decides who is next.
+        while budget > 0:
+            remaining = [d for d in working if d.balance > 0.005]
+            if not remaining:
+                break
             if strategy == "avalanche":
                 target = max(remaining, key=lambda d: d.rate)
             else:
                 target = min(remaining, key=lambda d: d.balance)
             pay = min(budget, target.balance)
+            if pay <= 0:
+                # Nothing else in this loop changes, so a pass that pays out
+                # nothing would spin forever. Bail rather than hang.
+                break
             target.balance -= pay
             budget -= pay
 
@@ -410,8 +432,8 @@ def withdrawal_sustainability(
     if poor returns land in the first few years. Treat the result as a
     necessary condition, not a sufficient one.
     """
-    _check_positive("portfolio_value", portfolio_value)
-    _check_positive("annual_withdrawal", annual_withdrawal)
+    _check_non_negative("portfolio_value", portfolio_value)
+    _check_non_negative("annual_withdrawal", annual_withdrawal)
     _check_rate("annual_return", annual_return)
     _check_rate("annual_inflation", annual_inflation)
     if not 0 < years <= _MAX_YEARS:

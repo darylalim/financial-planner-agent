@@ -24,7 +24,9 @@ from financial_planner.tools.calculators import (
     plan_debt_payoff,
     project_savings,
     required_savings_rate,
-    test_withdrawal_plan,
+)
+from financial_planner.tools.calculators import (
+    test_withdrawal_plan as withdrawal_plan_tool,
 )
 
 DEBTS = [
@@ -55,7 +57,7 @@ VALID_CALLS = [
     (loan_payment, {"principal": 300_000, "apr": 0.06, "years": 30}),
     (plan_debt_payoff, {"debts": DEBTS, "monthly_budget": 500.0}),
     (
-        test_withdrawal_plan,
+        withdrawal_plan_tool,
         {
             "portfolio_value": 1_000_000,
             "annual_withdrawal": 40_000,
@@ -80,7 +82,7 @@ INVALID_CALLS = [
     # Budget below the sum of the minimum payments: the debts never amortize.
     (plan_debt_payoff, {"debts": DEBTS, "monthly_budget": 10.0}),
     (
-        test_withdrawal_plan,
+        withdrawal_plan_tool,
         {"portfolio_value": 1_000, "annual_withdrawal": 40, "years": 0, "annual_return": 0.05},
     ),
 ]
@@ -231,7 +233,7 @@ class TestWithdrawalPlan:
     def test_the_monte_carlo_caveat_is_always_returned(self):
         """The tool docstring promises the caveat is relayed; it must be there."""
         result = call(
-            test_withdrawal_plan,
+            withdrawal_plan_tool,
             portfolio_value=1_000_000,
             annual_withdrawal=40_000,
             years=30,
@@ -241,7 +243,7 @@ class TestWithdrawalPlan:
 
     def test_an_unsustainable_plan_reports_depletion(self):
         result = call(
-            test_withdrawal_plan,
+            withdrawal_plan_tool,
             portfolio_value=200_000,
             annual_withdrawal=80_000,
             years=30,
@@ -252,7 +254,7 @@ class TestWithdrawalPlan:
 
     def test_a_sustainable_plan_survives_the_horizon(self):
         result = call(
-            test_withdrawal_plan,
+            withdrawal_plan_tool,
             portfolio_value=2_000_000,
             annual_withdrawal=40_000,
             years=30,

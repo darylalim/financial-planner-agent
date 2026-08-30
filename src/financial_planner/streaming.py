@@ -66,6 +66,29 @@ def _is_error_result(content: Any) -> bool:
     return stripped.startswith('{"error"') or stripped.startswith('{ "error"')
 
 
+def _tool_message_failed(message: Any) -> bool:
+    """Decide whether a returned tool message reports a failure.
+
+    Two signals are needed because two populations of tools report failure by
+    two different conventions, and this process runs both:
+
+    * our own tools return the ``{"error": ...}`` envelope with an otherwise
+      ordinary message -- see :func:`_is_error_result`;
+    * the Deep Agents built-ins (write_file, read_file, edit_file, ls, glob,
+      grep, write_todos, task) return ``ToolMessage(content="Error: ...",
+      status="error")`` and never use that envelope.
+
+    Checking only the envelope reported a failed write_file to the UI as
+    ToolEnd(ok=True), so the app printed nothing and the agent's claim to have
+    saved a file it never wrote went unchallenged.
+    """
+    # A default, because not everything arriving on the updates stream carries
+    # ``status`` -- ordinary AI messages and older message classes do not.
+    if getattr(message, "status", None) == "error":
+        return True
+    return _is_error_result(getattr(message, "content", ""))
+
+
 def stream_agent_events(
     agent: Any,
     messages: list[dict[str, str]],
@@ -178,5 +201,5 @@ def _events_for_message(message: Any, seen: set[str]) -> Iterator[StreamEvent]:
         seen.add(end_key)
         yield ToolEnd(
             name=getattr(message, "name", None) or "tool",
-            ok=not _is_error_result(getattr(message, "content", "")),
+            ok=not _tool_message_failed(message),
         )

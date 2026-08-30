@@ -314,6 +314,67 @@ class TestToolFailureIsVisible:
         assert [e.ok for e in ends] == [expected_ok]
 
 
+class TestBuiltinToolFailureIsVisible:
+    """Regression: only the `{"error": ...}` envelope was checked for failure.
+
+    The eight Deep Agents built-ins -- write_file, read_file, edit_file, ls,
+    glob, grep, write_todos, task -- do not use that envelope. They return
+    ``ToolMessage(content="Error: ...", status="error")``, so a failed
+    write_file reached the UI as ToolEnd(ok=True) and the app printed nothing:
+    the agent claimed to have saved a file it never wrote.
+    """
+
+    @pytest.mark.parametrize(
+        ("name", "content"),
+        [
+            ("write_file", "Error: File path must be absolute"),
+            ("read_file", "Error: File '/workspace/plan.md' not found"),
+            ("edit_file", "Error: String not found in file: 'target'"),
+            ("ls", "Error: Directory '/nope' not found"),
+        ],
+    )
+    def test_a_status_error_message_marks_the_call_failed(self, name, content):
+        result = ToolMessage(content=content, tool_call_id="x", name=name, status="error")
+        script = [("updates", {"tools": {"messages": [result]}})]
+        ends = [e for e in _events(script) if isinstance(e, ToolEnd)]
+        assert [e.ok for e in ends] == [False]
+
+    def test_a_successful_builtin_is_still_reported_ok(self):
+        """The built-ins' success text is prose, not an envelope, and their
+        status is "success" -- neither signal may fire on it."""
+        result = ToolMessage(
+            content="Updated file /workspace/plan.md",
+            tool_call_id="x",
+            name="write_file",
+        )
+        script = [("updates", {"tools": {"messages": [result]}})]
+        assert [e.ok for e in _events(script) if isinstance(e, ToolEnd)] == [True]
+
+    def test_the_envelope_signal_still_fires_without_a_status(self):
+        """Both signals are needed: our own tools report failure in the payload
+        while carrying the ordinary "success" status."""
+        result = ToolMessage(
+            content='{"error":"years must be in (0, 100]"}',
+            tool_call_id="x",
+            name="project_savings",
+        )
+        assert result.status == "success"
+        script = [("updates", {"tools": {"messages": [result]}})]
+        assert [e.ok for e in _events(script) if isinstance(e, ToolEnd)] == [False]
+
+    def test_a_message_without_a_status_attribute_is_tolerated(self):
+        """The updates stream is not guaranteed to carry LangChain message
+        objects, so the status lookup must have a default."""
+
+        class Bare:
+            tool_call_id = "x"
+            name = "write_file"
+            content = "all good"
+
+        script = [("updates", {"tools": {"messages": [Bare()]}})]
+        assert [e.ok for e in _events(script) if isinstance(e, ToolEnd)] == [True]
+
+
 class ToolBindableFake(GenericFakeChatModel):
     """Fake model that accepts tool binding; Deep Agents always binds built-ins."""
 

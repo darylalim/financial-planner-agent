@@ -144,15 +144,68 @@ class TestGetQuote:
             return FakeTicker(symbol)
 
         install(monkeypatch, factory)
-        quotes = call(get_quote, tickers=["VTI", "NOPE", "BND"])["quotes"]
+        result = call(get_quote, tickers=["VTI", "NOPE", "BND"])
+        quotes = result["quotes"]
         assert set(quotes) == {"VTI", "NOPE", "BND"}
         assert "error" in quotes["NOPE"]
         assert quotes["VTI"]["price"] == 251.43
+        assert result["failed"] == ["NOPE"]
+
+    def test_a_partial_failure_names_the_casualties(self, monkeypatch):
+        """A partial batch stays a success, so the losses must be in the payload.
+
+        The model reads the summary of a large batch rather than every entry, so
+        a symbol that quietly dropped out is a symbol quietly valued at zero.
+        """
+
+        def factory(symbol):
+            if symbol == "NOPE":
+                return FakeTicker(symbol, raises=RuntimeError("delisted"))
+            return FakeTicker(symbol)
+
+        install(monkeypatch, factory)
+        result = call(get_quote, tickers=["VTI", "NOPE"])
+        assert "error" not in result
+        assert result["failed"] == ["NOPE"]
+
+    def test_a_fully_successful_batch_reports_an_empty_failed_list(self, monkeypatch):
+        """`failed` is always present, so the model never has to infer its absence."""
+        install(monkeypatch, FakeTicker)
+        assert call(get_quote, tickers=["VTI", "BND"])["failed"] == []
+
+    def test_every_symbol_failing_is_an_error_not_a_green_success(self, monkeypatch):
+        """All-failed differs in kind from some-failed, and the UI can only see it
+        as a failure if the envelope carries an "error" key."""
+        install(monkeypatch, lambda s: FakeTicker(s, raises=RuntimeError("delisted")))
+        result = call(get_quote, tickers=["NOPE", "ZZZZ"])
+        assert "error" in result
+        assert "quotes" not in result
+        assert "NOPE" in result["error"] and "ZZZZ" in result["error"]
+        assert "delisted" in result["error"]  # the first underlying reason
+
+    def test_every_symbol_missing_a_price_is_also_an_error(self, monkeypatch):
+        """The no-price branch is a failure too, not just a raised exception."""
+        install(monkeypatch, lambda s: FakeTicker(s, fast_info={"currency": "USD"}))
+        result = call(get_quote, tickers=["VTI"])
+        assert "error" in result
+        assert "check the symbol" in result["error"]
 
     def test_a_missing_price_is_reported_per_symbol(self, monkeypatch):
-        install(monkeypatch, lambda s: FakeTicker(s, fast_info={"currency": "USD"}))
-        quote = call(get_quote, tickers=["VTI"])["quotes"]["VTI"]
-        assert "check the symbol" in quote["error"]
+        """Paired with a resolvable symbol so this stays a *partial* failure.
+
+        A lone priceless symbol is now an all-failed call and comes back as an
+        error envelope, which would test a different branch than this one.
+        """
+
+        def factory(symbol):
+            if symbol == "VTI":
+                return FakeTicker(symbol, fast_info={"currency": "USD"})
+            return FakeTicker(symbol)
+
+        install(monkeypatch, factory)
+        result = call(get_quote, tickers=["VTI", "BND"])
+        assert "check the symbol" in result["quotes"]["VTI"]["error"]
+        assert result["failed"] == ["VTI"]
 
     def test_unusable_range_fields_become_null_not_an_exception(self, monkeypatch):
         install(
@@ -194,6 +247,30 @@ class TestFundProfile:
     def test_a_provider_failure_returns_an_error_envelope(self, monkeypatch):
         install(monkeypatch, lambda s: FakeTicker(s, raises=RuntimeError("upstream down")))
         assert "error" in call(get_fund_profile, ticker="VTI")
+
+    def test_the_description_names_the_key_the_payload_actually_returns(self, monkeypatch):
+        """The docstring *is* the tool description the model reads.
+
+        It used to promise an `expense_ratio` "as a decimal; 0.0003 means
+        0.03%" while the code emitted `expense_ratio_raw` on the opposite
+        scale -- a model trusting the description would misstate a fee by 100x.
+        Assert the description against the live payload so the two cannot drift
+        apart again.
+        """
+        install(monkeypatch, FakeTicker)
+        payload = call(get_fund_profile, ticker="VTI")
+        description = get_fund_profile.description
+
+        assert "expense_ratio_raw" in description
+        assert "expense_ratio_note" in description
+        # No promise of a key the payload does not carry: "expense_ratio" only
+        # ever appears as the prefix of one of the two keys above.
+        assert description.count("expense_ratio") == 2
+        for key in ("expense_ratio_raw", "expense_ratio_note"):
+            assert key in payload
+        # The described scale must match the one the payload's own note states.
+        assert "0.03 means 0.03%" in description
+        assert "0.03 means 0.03%" in payload["expense_ratio_note"].replace("\n", " ")
 
 
 class TestHistoricalReturn:

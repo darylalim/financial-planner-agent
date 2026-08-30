@@ -35,7 +35,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 # Redirect the agent's filesystem root BEFORE financial_planner.config is
 # imported and freezes the path. Skills are copied in so the agent can still
 # load them; nothing is written back to the real agent_home.
-_LIVE_HOME = Path(tempfile.mkdtemp(prefix="planner-live-"))
+# Nested one level down: CHECKPOINT_DB is a sibling of AGENT_HOME (outside it,
+# so the agent cannot read its own transcript), so a home with no parent of its
+# own would drop the database into the shared system temp root, outliving the
+# run and colliding with concurrent ones. The atexit below removes the parent.
+_LIVE_ROOT = Path(tempfile.mkdtemp(prefix="planner-live-"))
+_LIVE_HOME = _LIVE_ROOT / "home"
+_LIVE_HOME.mkdir()
 shutil.copytree(PROJECT_ROOT / "agent_home" / "skills", _LIVE_HOME / "skills")
 (_LIVE_HOME / "workspace").mkdir()
 shutil.copy(
@@ -45,7 +51,7 @@ shutil.copy(
 os.environ["FINANCIAL_PLANNER_HOME"] = str(_LIVE_HOME)
 # atexit rather than a try/finally, so the temp home is removed on every exit
 # path -- including the early returns for a missing key or a bad scenario name.
-atexit.register(shutil.rmtree, _LIVE_HOME, ignore_errors=True)
+atexit.register(shutil.rmtree, _LIVE_ROOT, ignore_errors=True)
 
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
@@ -185,6 +191,15 @@ def main() -> int:
     if "search" in requested and not TAVILY_API_KEY:
         print("Skipping 'search': TAVILY_API_KEY is not set.")
         requested = [n for n in requested if n != "search"]
+
+    # Skipping can empty the set -- `live_check.py search` with no Tavily key.
+    # Without this the summary below reduces to `all({})`, which is True, and
+    # the script exits 0: a wrapper or CI step reads a run that verified
+    # nothing as a pass. Nothing ran, so this is a "cannot run" (2), not a
+    # "found problems" (1).
+    if not requested:
+        print("Cannot run: every requested scenario was skipped, so nothing was checked.")
+        return 2
 
     results = {name: run_scenario(name, SCENARIOS[name]) for name in requested}
 

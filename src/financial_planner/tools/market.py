@@ -45,8 +45,10 @@ def get_quote(tickers: list[str]) -> str:
 
     Returns:
         JSON mapping each ticker to price, currency, quote_type and 52-week
-        range. Symbols that cannot be resolved appear with an "error" key rather
-        than failing the whole call.
+        range, plus a "failed" list naming the symbols that did not resolve.
+        A symbol that cannot be resolved appears with an "error" key rather than
+        failing the whole call; if *every* symbol fails, the call returns an
+        error envelope instead of a batch of failures.
     """
     try:
         symbols = _clean(tickers)
@@ -54,12 +56,20 @@ def get_quote(tickers: list[str]) -> str:
         return err(exc)
 
     results: dict[str, Any] = {}
+    # Named separately from `results` so a partial failure is visible without
+    # walking every entry looking for an "error" key -- the model reads the
+    # summary, not the whole payload, when a batch is large.
+    failed: list[str] = []
+    first_reason: str | None = None
     for sym in symbols:
         try:
             fi = yf.Ticker(sym).fast_info
             price = fi.get("lastPrice")
             if price is None:
-                results[sym] = {"error": "no price available; check the symbol"}
+                reason = "no price available; check the symbol"
+                results[sym] = {"error": reason}
+                failed.append(sym)
+                first_reason = first_reason or reason
                 continue
             results[sym] = {
                 "price": round(float(price), 2),
@@ -70,8 +80,20 @@ def get_quote(tickers: list[str]) -> str:
                 "year_low": _round(fi.get("yearLow")),
             }
         except Exception as exc:  # noqa: BLE001 - per-symbol isolation
-            results[sym] = {"error": f"{type(exc).__name__}: {exc}"}
-    return ok({"quotes": results})
+            reason = f"{type(exc).__name__}: {exc}"
+            results[sym] = {"error": reason}
+            failed.append(sym)
+            first_reason = first_reason or reason
+
+    # An all-failed call differs in kind from a partial one, not in degree. A
+    # partial batch still carries prices the model can use, so it stays a
+    # success that names its casualties. An all-failed batch carries nothing --
+    # and `streaming._is_error_result` decides failure by looking for an error
+    # envelope, so returning ok() here paints a wholly failed lookup green in
+    # the UI while the model reads a "successful" result containing no prices.
+    if failed and len(failed) == len(symbols):
+        return err(f"no quotes resolved for {', '.join(failed)}; first reason: {first_reason}")
+    return ok({"quotes": results, "failed": failed})
 
 
 def _round(value: Any) -> float | None:
@@ -95,8 +117,13 @@ def get_fund_profile(ticker: str) -> str:
         ticker: A fund or ETF symbol, e.g. "VTI".
 
     Returns:
-        JSON with name, quote_type, category and expense_ratio (as a decimal;
-        0.0003 means 0.03%). Fields are null when the provider lacks the data.
+        JSON with name, quote_type, category, expense_ratio_raw and
+        expense_ratio_note. The raw value is the provider's own, on the
+        provider's own scale: usually a percentage figure (0.03 means 0.03%),
+        but the feeds are not consistent about it, which is what the note says.
+        Relay that caveat and check the fund's factsheet before converting the
+        fee to dollars -- reading the value on the wrong scale is a 100x error.
+        Fields are null when the provider lacks the data.
     """
     try:
         sym = _clean([ticker])[0]

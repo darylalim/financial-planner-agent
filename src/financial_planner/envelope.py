@@ -30,9 +30,36 @@ from financial_planner import config
 
 REDACTED = "***"
 
-# Attributes on `config` holding a secret. Read by name at call time so a
-# credential that changes mid-session is still caught.
-_SECRET_ATTRS = ("ANTHROPIC_API_KEY", "TAVILY_API_KEY")
+# A credential is recognised by the SHAPE of its name on `config`, not by a
+# hardcoded list of the two we happen to have today. A third key added to
+# config.py used to leak until someone remembered to extend that list, which is
+# exactly the kind of maintenance nobody remembers under a deadline.
+_SECRET_NAME_SUFFIXES = ("_API_KEY", "_KEY", "_TOKEN", "_SECRET")
+
+# Below this length a value is not a credential, and replacing it would shred
+# the message: a one-character secret matches between every character.
+_MIN_SECRET_LENGTH = 8
+
+
+def _configured_secrets() -> list[str]:
+    """Return the secret values `config` currently holds, longest first.
+
+    Both the names and the values are discovered at call time, not at import
+    time: config reads its keys from the environment when it is imported, and
+    both the app and the tests rebind (and add) those attributes afterwards.
+
+    Longest first, so that when one secret is a substring of another the longer
+    one is replaced whole rather than left as a redacted stub. That ordering is
+    also what makes the output deterministic.
+    """
+    secrets = {
+        value
+        for name, value in vars(config).items()
+        if name.endswith(_SECRET_NAME_SUFFIXES)
+        and isinstance(value, str)
+        and len(value) >= _MIN_SECRET_LENGTH
+    }
+    return sorted(secrets, key=lambda secret: (-len(secret), secret))
 
 
 def redact(message: str) -> str:
@@ -46,12 +73,8 @@ def redact(message: str) -> str:
     Substring replacement rather than a pattern: the point is to catch the keys
     this process actually holds, not to guess at every credential format.
     """
-    for attr in _SECRET_ATTRS:
-        secret = getattr(config, attr, None)
-        # Guard the length: an empty or one-character value would otherwise
-        # replace between every character of the message.
-        if secret and len(secret) >= 8:
-            message = message.replace(secret, REDACTED)
+    for secret in _configured_secrets():
+        message = message.replace(secret, REDACTED)
     return message
 
 
@@ -61,8 +84,15 @@ def ok(payload: dict[str, Any]) -> str:
     ``default=str`` covers the pandas and numpy scalars that reach here from the
     document and market tools; JSON has no opinion about a ``Period`` or an
     ``int64``.
+
+    Success is redacted as well as failure. A key does not only leak through an
+    exception: search snippets and other relayed upstream text ride back on the
+    *successful* path too, and the redaction guarantee the README makes is over
+    everything a tool returns, not just what it returns when it breaks.
+    Redaction runs on the serialized text so the shape `_is_error_result` reads
+    is settled first and left untouched.
     """
-    return json.dumps(payload, separators=(",", ":"), default=str)
+    return redact(json.dumps(payload, separators=(",", ":"), default=str))
 
 
 def err(problem: Exception | str) -> str:

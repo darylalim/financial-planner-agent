@@ -267,3 +267,55 @@ class TestGuardsFoundByReview:
         """The zero-rate branch divides by the month count as well."""
         with pytest.raises(ValueError, match="at least one month"):
             amortize_loan(principal=5_000, apr=0.0, years=0.02)
+
+    def test_amortize_totals_are_built_from_the_reported_payment(self):
+        """The three reported numbers must reconcile exactly, not to within $1.
+
+        Totalling the *unrounded* payment reported $1,798.65/mo alongside a
+        total of $647,514.57, while 1798.65 * 360 is $647,514.00 -- a 57c gap a
+        user reproduces on any calculator.
+        """
+        result = amortize_loan(principal=300_000, apr=0.06, years=30)
+        assert result.monthly_payment == pytest.approx(1798.65, abs=0.01)
+        assert result.total_paid == pytest.approx(result.monthly_payment * result.months, abs=0.005)
+        assert result.total_interest == pytest.approx(result.total_paid - 300_000, abs=0.005)
+
+    def test_amortize_rounds_a_fractional_term_to_whole_months(self):
+        """The docstring promises nearest-month rounding; pin it."""
+        assert amortize_loan(principal=10_000, apr=0.06, years=30.5).months == 366
+        assert amortize_loan(principal=10_000, apr=0.06, years=1.01).months == 12
+
+    def test_payoff_cascades_leftover_budget_within_the_same_month(self):
+        """A target that clears mid-month must hand its remainder straight on.
+
+        Applying the leftover to exactly one debt stranded $850 of a $1,000
+        budget for a month: snowball cleared A ($100) in month 1 and then sat
+        idle while B accrued at 24%.
+        """
+        debts = [
+            {"name": "A", "balance": 100.0, "apr": 0.0, "minimum_payment": 10.0},
+            {"name": "B", "balance": 10_000.0, "apr": 0.24, "minimum_payment": 50.0},
+        ]
+        result = payoff_debts(debts=debts, monthly_budget=1_000.0, strategy="snowball")
+        # Month 1: interest takes B to 10,200; minimums (10 + 50) and then the
+        # whole 940 leftover -- 90 clearing A, 850 cascading to B -- leave B at
+        # 10,200 - 50 - 850 = 9,300. Stranding the 850 would leave it at 10,150.
+        assert result.payoff_order[0] == {"name": "A", "paid_off_month": 1}
+        assert result.months_to_debt_free == 12
+
+    def test_payoff_cascade_still_respects_strategy_ordering(self):
+        """Re-selecting each pass must not let snowball beat avalanche."""
+        avalanche = payoff_debts(
+            debts=TestDebtPayoff.MIXED, monthly_budget=2_000, strategy="avalanche"
+        )
+        snowball = payoff_debts(
+            debts=TestDebtPayoff.MIXED, monthly_budget=2_000, strategy="snowball"
+        )
+        assert avalanche.total_interest_paid <= snowball.total_interest_paid
+        assert snowball.payoff_order[0]["name"] == "Store"
+
+    def test_payoff_absorbs_a_budget_far_larger_than_the_total_debt(self):
+        """The cascade must terminate once every balance is gone, not spin."""
+        result = payoff_debts(debts=TestDebtPayoff.MIXED, monthly_budget=1_000_000)
+        assert result.months_to_debt_free == 1
+        assert len(result.payoff_order) == 3

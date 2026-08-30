@@ -47,8 +47,13 @@ def destination_for(directory: Path, filename: str) -> Path | None:
         counter += 1
 
 
-def save_uploads(files: list[Any], directory: Path) -> list[str]:
-    """Write uploaded files into ``directory``, returning the names used.
+def save_uploads(files: list[Any], directory: Path) -> tuple[list[str], list[str]]:
+    """Write uploaded files into ``directory``, reporting saves and skips.
+
+    A name with no usable final component cannot be written, and dropping it
+    quietly is data loss the user never hears about: they attached a file, the
+    agent is never told about it, and nothing on screen says why. So the skip is
+    returned rather than swallowed, leaving the caller free to say so.
 
     Args:
         files: Objects exposing ``.name`` and ``.getvalue()`` (Streamlit's
@@ -56,14 +61,18 @@ def save_uploads(files: list[Any], directory: Path) -> list[str]:
         directory: Destination directory, created by the caller.
 
     Returns:
-        The filenames actually written, which may differ from the uploaded
-        names when a collision was renamed.
+        ``(saved, skipped)``. ``saved`` holds the filenames actually written,
+        which may differ from the uploaded names when a collision was renamed;
+        ``skipped`` holds the uploaded names that could not be written at all,
+        reported as uploaded because no file exists under any other name.
     """
     saved: list[str] = []
+    skipped: list[str] = []
     for item in files:
         destination = destination_for(directory, item.name)
         if destination is None:
+            skipped.append(item.name)
             continue
         destination.write_bytes(item.getvalue())
         saved.append(destination.name)
-    return saved
+    return saved, skipped

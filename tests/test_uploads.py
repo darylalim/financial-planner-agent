@@ -61,15 +61,30 @@ class TestCollisionsDoNotOverwrite:
     def test_saved_names_reflect_what_was_actually_written(self, tmp_path):
         """The agent is told these paths, so they must be the real ones."""
         (tmp_path / "export.csv").write_bytes(b"january")
-        assert save_uploads([FakeUpload("export.csv")], tmp_path) == ["export-2.csv"]
+        saved, _ = save_uploads([FakeUpload("export.csv")], tmp_path)
+        assert saved == ["export-2.csv"]
 
 
 class TestSaveUploads:
     def test_writes_content_and_returns_names(self, tmp_path):
-        saved = save_uploads([FakeUpload("a.csv", b"one"), FakeUpload("b.csv", b"two")], tmp_path)
+        saved, skipped = save_uploads(
+            [FakeUpload("a.csv", b"one"), FakeUpload("b.csv", b"two")], tmp_path
+        )
         assert saved == ["a.csv", "b.csv"]
+        assert skipped == []
         assert (tmp_path / "a.csv").read_bytes() == b"one"
 
     def test_unusable_names_are_skipped_not_fatal(self, tmp_path):
-        saved = save_uploads([FakeUpload(".."), FakeUpload("good.csv")], tmp_path)
+        saved, _ = save_uploads([FakeUpload(".."), FakeUpload("good.csv")], tmp_path)
         assert saved == ["good.csv"]
+
+    def test_a_skipped_upload_is_reported_rather_than_swallowed(self, tmp_path):
+        """Silently dropping one is data loss the user never hears about.
+
+        The caller can only warn about a file that vanished if it is told which
+        one, so the skipped name -- as uploaded, since nothing was written under
+        any other -- comes back alongside the saved ones.
+        """
+        saved, skipped = save_uploads([FakeUpload(".."), FakeUpload("good.csv")], tmp_path)
+        assert saved == ["good.csv"]
+        assert skipped == [".."]

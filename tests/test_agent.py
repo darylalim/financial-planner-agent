@@ -19,6 +19,9 @@ sufficient to verify composition.
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from typing import Any
 
 import pytest
@@ -26,7 +29,7 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langgraph.checkpoint.memory import InMemorySaver
 
 from financial_planner.agent import build_agent
-from financial_planner.config import DEFAULT_MODEL
+from financial_planner.config import AGENT_HOME, CHECKPOINT_DB, DEFAULT_MODEL, PROJECT_ROOT
 from financial_planner.tools import ALL_TOOLS
 
 # The filesystem tools build_agent asks for by name. `delete` and `execute` are
@@ -56,9 +59,10 @@ class ToolBindableFake(GenericFakeChatModel):
 def agent() -> Any:
     """A compiled agent built exactly as the app builds it, minus the real model.
 
-    ``InMemorySaver`` rather than the default: ``build_checkpointer()`` writes
-    ``planner_state.sqlite`` into the project root, which ``FINANCIAL_PLANNER_HOME``
-    does not relocate, so the default would leave a file behind in the repo.
+    ``InMemorySaver`` rather than the default: ``build_checkpointer()`` opens a
+    real SQLite connection and creates ``planner_state.sqlite`` on disk. That
+    now lands beside conftest's throwaway home rather than in the repo, but a
+    composition test has no business creating a database at all.
     """
     return build_agent(model=ToolBindableFake(messages=iter([])), checkpointer=InMemorySaver())
 
@@ -203,7 +207,7 @@ class TestHarnessProfileAssumptions:
             self.SENTINEL_SPEC,
             HarnessProfile(
                 tool_description_overrides={"read_file": "sentinel"},
-                excluded_tools={"edit_file"},
+                excluded_tools=frozenset({"edit_file"}),
             ),
         )
         yield
@@ -245,3 +249,77 @@ class TestMiddlewareSurvives:
 
     def test_todo_middleware_node_is_present(self, agent: Any) -> None:
         assert "TodoListMiddleware.after_model" in agent.nodes
+
+
+class TestCheckpointDatabaseLocation:
+    """Where ``planner_state.sqlite`` lands is a boundary, not a preference.
+
+    ``conftest`` redirects ``FINANCIAL_PLANNER_HOME`` at a throwaway directory
+    so nothing in the suite touches the household's real installation. These
+    assertions therefore run against a redirected home, which is exactly the
+    case the pinned ``PROJECT_ROOT / "planner_state.sqlite"`` got wrong.
+    """
+
+    def test_the_checkpoint_db_is_not_inside_the_agent_home(self) -> None:
+        """The agent must not be able to read its own conversation history.
+
+        ``AGENT_HOME`` is the ``FilesystemBackend`` root, so anything under it
+        is readable by ``read_file``/``grep``. The checkpoint database holds the
+        full transcript of the household's finances -- balances, account
+        details, debts -- and putting it in the agent's own world would hand a
+        prompt-injected turn the entire history in one tool call.
+
+        Both sides are resolved: on macOS the temporary home lives under a
+        symlinked ``/var``, and a containment check across a symlink boundary
+        that compares unresolved paths answers the wrong question.
+        """
+        assert not CHECKPOINT_DB.resolve().is_relative_to(AGENT_HOME.resolve())
+
+    def test_the_checkpoint_db_follows_a_redirected_home(self) -> None:
+        """It is a sibling of AGENT_HOME, so redirecting the home moves it too.
+
+        It used to be pinned to ``PROJECT_ROOT``, which ``FINANCIAL_PLANNER_HOME``
+        does not move -- so this suite and ``scripts/live_check.py``, which exist
+        precisely to run against a throwaway home, still wrote their
+        conversations into the real repository database.
+        """
+        assert CHECKPOINT_DB == AGENT_HOME.parent / "planner_state.sqlite"
+        assert not CHECKPOINT_DB.is_relative_to(PROJECT_ROOT)
+
+
+class TestLiveCheckRefusesAVacuousRun:
+    """``scripts/live_check.py`` must not report a pass when it checked nothing.
+
+    It lives in this module because it is the same class of silent failure the
+    file docstring describes: a green result that asserts nothing. ``search`` is
+    skipped without ``TAVILY_API_KEY``, which can empty the requested set, and
+    ``all({})`` is True -- so the script exited 0 and any wrapper or CI step
+    reading that status saw a clean live run that never called the model.
+
+    Run as a subprocess rather than imported: the module redirects
+    ``FINANCIAL_PLANNER_HOME`` and copies a throwaway home at *import* time, so
+    importing it here would mutate this session's environment. No scenario runs,
+    so the key below is never used against the API.
+    """
+
+    def test_an_empty_scenario_set_exits_non_zero(self) -> None:
+        env = {
+            **os.environ,
+            # Present so the missing-key gate passes; empty so 'search' is
+            # skipped. python-dotenv does not override an already-set variable,
+            # so a real .env cannot put the key back and start a paid run.
+            "ANTHROPIC_API_KEY": "not-used-no-scenario-runs",
+            "TAVILY_API_KEY": "",
+        }
+        result = subprocess.run(
+            [sys.executable, str(PROJECT_ROOT / "scripts" / "live_check.py"), "search"],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=300,
+        )
+
+        # 2 rather than 1: main() already uses 2 for "cannot run" and 1 for "a
+        # scenario found problems", and nothing ran here.
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert "Cannot run" in result.stdout

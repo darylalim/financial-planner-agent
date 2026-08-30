@@ -34,6 +34,13 @@ from financial_planner.uploads import save_uploads
 # then failed on. Better to reject it at the picker.
 UPLOAD_TYPES = ["csv", "xlsx", "pdf"]
 
+# How many new characters to accumulate before repainting a streaming answer.
+# Each repaint re-escapes the whole answer so far, so painting once per token
+# makes the render cost grow with the square of the answer length -- a long
+# reply spends seconds re-scanning text the user has already read. At model
+# speed this is still several repaints a second, so the text keeps flowing.
+STREAM_REDRAW_CHARS = 32
+
 TOOL_LABELS = {
     "project_savings": "Projecting savings",
     "required_savings_rate": "Solving for a savings rate",
@@ -111,6 +118,8 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 if "thread_id" not in st.session_state:
     st.session_state.thread_id = new_thread_id()
+if "unsaved_uploads" not in st.session_state:
+    st.session_state.unsaved_uploads = []
 
 with st.sidebar:
     st.subheader("Financial planner")
@@ -119,6 +128,7 @@ with st.sidebar:
     if st.button("New conversation", icon=":material/add_comment:", width="stretch"):
         st.session_state.messages = []
         st.session_state.thread_id = new_thread_id()
+        st.session_state.unsaved_uploads = []
         st.rerun()
 
     st.divider()
@@ -178,12 +188,33 @@ prompt = st.chat_input(
 user_text: str | None = None
 uploaded_names: list[str] = []
 
+# Cleared on every submission so the notice below never outlives the upload it
+# describes. It lives in session_state because the st.rerun() at the end of a
+# successful turn repaints the page: a warning drawn during the turn would
+# otherwise flash past unread, which is the silent loss it exists to prevent.
+if picked or prompt:
+    st.session_state.unsaved_uploads = []
+
+# Saved here rather than inside the branch that resolves the text: the files
+# ride on the chat input, so an attachment is persisted whichever source ends
+# up supplying the message.
+if prompt and prompt.files:
+    uploaded_names, st.session_state.unsaved_uploads = save_uploads(prompt.files, WORKSPACE_DIR)
+
 if picked:
     user_text = SUGGESTIONS[picked]
 elif prompt:
     user_text = (prompt.text or "").strip() or None
-    if prompt.files:
-        uploaded_names = save_uploads(prompt.files, WORKSPACE_DIR)
+
+if st.session_state.unsaved_uploads:
+    # escape_dollars because the name is browser-supplied and st.warning renders
+    # markdown, so a file called "$100 to $200.csv" would arrive as LaTeX.
+    unsaved = ", ".join(escape_dollars(n) for n in st.session_state.unsaved_uploads)
+    st.warning(
+        f"Could not save: {unsaved}. The name carries no usable filename; "
+        "rename the file and attach it again.",
+        icon=":material/warning:",
+    )
 
 if user_text or uploaded_names:
     # Tell the agent where the files landed; it cannot see the upload widget.
@@ -201,7 +232,8 @@ if user_text or uploaded_names:
     with st.chat_message("assistant"):
         activity = st.status("Thinking", expanded=False)
         answer_slot = st.empty()
-        parts: list[str] = []
+        streamed = ""
+        painted = 0
 
         try:
             agent = load_agent(DEFAULT_MODEL)
@@ -213,8 +245,13 @@ if user_text or uploaded_names:
 
             for event in events:
                 if isinstance(event, Token):
-                    parts.append(event.text)
-                    answer_slot.markdown(escape_dollars("".join(parts)))
+                    streamed += event.text
+                    # Repaint on a line break -- where a half-drawn list or
+                    # heading looks worst -- or once enough new text has piled
+                    # up to be worth another full-answer escape pass.
+                    if "\n" in event.text or len(streamed) - painted >= STREAM_REDRAW_CHARS:
+                        answer_slot.markdown(escape_dollars(streamed))
+                        painted = len(streamed)
                 elif isinstance(event, ToolStart):
                     label = TOOL_LABELS.get(event.name, event.name)
                     activity.update(label=label)
@@ -226,7 +263,7 @@ if user_text or uploaded_names:
                             "the agent will retry or work around it."
                         )
 
-            answer = "".join(parts).strip()
+            answer = streamed.strip()
             activity.update(label="Done", state="complete")
 
             if not answer:
@@ -234,7 +271,11 @@ if user_text or uploaded_names:
                     "_The agent finished without producing a reply. "
                     "Try rephrasing, or start a new conversation._"
                 )
-                answer_slot.markdown(answer)
+
+            # Unconditional final paint: the throttle above leaves the last few
+            # tokens undrawn, so the completed answer is only exact once this
+            # has run.
+            answer_slot.markdown(escape_dollars(answer))
 
             st.session_state.messages.append({"role": "assistant", "content": answer})
             completed = True
@@ -244,9 +285,22 @@ if user_text or uploaded_names:
             # Redacted for the same reason the tools redact: this is the one
             # place a model-client error surfaces, and those quote the failing
             # request. Streamlit renders it and it may be screenshotted.
-            st.error(redact(f"{type(exc).__name__}: {exc}"), icon=":material/error:")
-            # Do not persist a failed turn to the transcript; the checkpointer
-            # already holds whatever partial state the graph committed.
+            detail = redact(f"{type(exc).__name__}: {exc}")
+            # escape_dollars because st.error renders markdown too: an error
+            # quoting two dollar amounts would render the span between them as
+            # LaTeX, exactly as it would in an answer.
+            st.error(escape_dollars(detail), icon=":material/error:")
+            # Nothing is sent to the *checkpointer* -- it already holds whatever
+            # partial state the graph committed. But session_state.messages is
+            # display only (see the module docstring), and leaving it without a
+            # reply means the next rerun redraws a question the agent appears to
+            # have ignored, the st.error having gone with the old page.
+            st.session_state.messages.append(
+                {
+                    "role": "assistant",
+                    "content": f"_This turn failed and was not answered: {detail}_",
+                }
+            )
 
     if completed:
         # Redraw once the turn is done. The sidebar's document list and the

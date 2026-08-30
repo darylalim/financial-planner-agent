@@ -35,7 +35,19 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 AGENT_HOME = Path(os.getenv("FINANCIAL_PLANNER_HOME") or PROJECT_ROOT / "agent_home")
 WORKSPACE_DIR = AGENT_HOME / "workspace"
 SKILLS_DIR = AGENT_HOME / "skills"
-CHECKPOINT_DB = PROJECT_ROOT / "planner_state.sqlite"
+# A *sibling* of AGENT_HOME, not a path under PROJECT_ROOT: pinning it to the
+# repo meant FINANCIAL_PLANNER_HOME did not move it, so the live check and the
+# test suite -- which exist precisely to run against a throwaway home -- still
+# wrote their conversations into the real installation's database. Deriving it
+# from AGENT_HOME keeps the default byte-identical (AGENT_HOME defaults to
+# PROJECT_ROOT/agent_home, whose parent is PROJECT_ROOT) while making a
+# redirected home self-contained.
+#
+# Deliberately *beside* AGENT_HOME rather than inside it. AGENT_HOME is the
+# FilesystemBackend root, so a database holding the full transcript of the
+# household's finances would become readable by the agent itself -- the exact
+# boundary the module docstring above exists to draw.
+CHECKPOINT_DB = AGENT_HOME.parent / "planner_state.sqlite"
 
 # --- Virtual paths, as the agent sees them ----------------------------------
 # These are relative to AGENT_HOME because virtual_mode=True re-roots the
