@@ -3,10 +3,14 @@
 #
 # Runs the exact three commands a developer runs by hand:
 #   ruff format --check .  &&  ruff check .  &&  pytest -q
-# 284 tests in ~2.8s, fully offline, no API key. That is unusually cheap and is
-# what makes a real gate viable here. It catches whole-repo consequences the
-# per-file PostToolUse hook structurally cannot -- above all a renamed symbol
-# that leaves both files individually lint-clean while breaking the import.
+# The whole suite, in seconds, fully offline and with no API key. That is
+# unusually cheap and is what makes a real gate viable here. The test count is
+# deliberately not repeated in this comment: it already lives in the README and
+# in CI, and a third copy only gave it somewhere else to drift.
+#
+# It catches whole-repo consequences the per-file PostToolUse hook structurally
+# cannot -- above all a renamed symbol that leaves both files individually
+# lint-clean while breaking the import.
 set -u
 
 cat >/dev/null   # drain the payload; the attempt counter replaced every use of it

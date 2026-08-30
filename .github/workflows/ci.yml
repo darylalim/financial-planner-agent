@@ -1,0 +1,142 @@
+# The same three checks as `.claude/hooks/verify.sh`, run on a fresh clone.
+#
+# It pins 3.11 -- the floor `requires-python = ">=3.11"` declares -- rather than
+# the 3.14 a local `.venv` is likely to be, because the floor is the claim
+# nothing else tests. Be clear about what that leaves open: no automated check
+# runs on 3.14, and the local hook is not a substitute for one, since it skips
+# entirely when there is no `.venv`, arms only when Edit/Write touched a .py,
+# and runs only inside a Claude Code session on one machine. Adding "3.14" to a
+# `strategy.matrix` below is what would close that gap.
+#
+# The suite needs no API key and no network, so this workflow needs no secrets
+# and is safe on pull requests from forks. `scripts/live_check.py` is
+# deliberately not here: it spends real money against the live API.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Default for both jobs. `release` overrides it with `contents: write`; nothing
+# else in this file can write.
+permissions:
+  contents: read
+
+# Supersede a run when its ref is pushed again; the queued work is stale. Safe
+# on main as well, because the release job decides what to ship from whether the
+# tag exists rather than from what its own run happened to observe -- so a
+# release lost to cancellation is simply made by the run that replaced it.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    # The suite runs in ~30s cold. Ten minutes is slack for a slow download, not
+    # a budget; without it a hung step burns the 360-minute default.
+    timeout-minutes: 10
+    env:
+      # `uv run` re-locks on its own, so the assertion `uv sync --locked` makes
+      # would lapse for exactly the three steps that produce the verdict.
+      UV_LOCKED: "1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: "3.11"
+          # `enable-cache` already defaults to `auto`, which is on for push and
+          # pull_request, so setting it buys nothing. `cache-python` is the one
+          # that defaults to false -- without it the managed CPython above is
+          # downloaded from scratch on every run.
+          cache-python: true
+
+      # `--locked` fails on a stale lockfile rather than silently re-resolving,
+      # so a dependency added to pyproject.toml but never locked is caught here
+      # instead of on the next machine that clones the repo.
+      - run: uv sync --locked
+
+      # The gate from `.claude/hooks/verify.sh`, in its order. Not the README's
+      # snippet, which lists the same tools in a different order and formats in
+      # place; `--check` is what makes formatting a verdict rather than an edit.
+      - run: uv run ruff format --check .
+      - run: uv run ruff check .
+      - run: uv run pytest -q
+
+  # Publishes a GitHub Release when the version in pyproject.toml has no tag
+  # yet. `needs: verify` is what keeps a red commit from ever being tagged.
+  release:
+    needs: verify
+    # Pushes to main only. A pull request -- including one from a fork -- can
+    # therefore never reach the write-scoped token below.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # The only job in this file that can write, and it can only write here.
+    # The test job above keeps the read-only default declared at the top.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - id: version
+        run: |
+          # tomllib, not grep: `version = ` stops being unique to [project] the
+          # day a [tool.*] table acquires one, and the wrong match would tag a
+          # string that is not the release. It is stdlib from 3.11 and the
+          # runner's python3 is newer, so this costs no setup step.
+          version=$(python3 -c 'import tomllib, pathlib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')
+
+          # A TOML string can hold a newline, a quote or a `$`. Unchecked, the
+          # first forges extra step outputs through GITHUB_OUTPUT and the rest
+          # are shell metacharacters in a job that holds a write-scoped token.
+          # Refuse anything that is not a plain version, loudly, rather than
+          # trying to quote a hostile string safely downstream.
+          case $version in
+            ""|*[!0-9A-Za-z.+-]*)
+              echo "::error::Refusing to release an unexpected version string: $version"
+              exit 1
+              ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+          # The trigger is "this version has no tag", not "the version changed
+          # in this push". Diffing against the previous commit breaks on squash
+          # merges, re-runs and force pushes; the tag is the durable record of
+          # what has already shipped, so asking it makes the job idempotent.
+          # Asked of origin rather than the local clone, because origin is
+          # where the tag would be created and the checkout is shallow.
+          #
+          # `--exit-code` answers 0 for found and 2 for absent, but 128 for a
+          # network or credential failure. Folding that into "absent" would let
+          # a DNS blip re-release a shipped version, so it is fatal here and
+          # git's own stderr is left on the log to say why.
+          rc=0
+          git ls-remote --exit-code --tags origin "refs/tags/v$version" >/dev/null || rc=$?
+          case $rc in
+            0) echo "v$version is already tagged; nothing to release." ;;
+            2) echo "release=true" >> "$GITHUB_OUTPUT" ;;
+            *)
+              echo "::error::git ls-remote failed (exit $rc); cannot tell whether v$version is released."
+              exit "$rc"
+              ;;
+          esac
+
+      # `gh release create` creates the tag at --target itself, so there is no
+      # separate tag-and-push step and no need to fetch history. gh ships on the
+      # runner, so checkout is the only action this write-scoped job runs.
+      - if: steps.version.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Passed through the environment rather than interpolated into the
+          # script. `${{ }}` is substituted textually before bash parses the
+          # line, so interpolating it would make the version string executable
+          # here even though the check above already rejects one that could be.
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release create "v$VERSION" \
+            --target "$GITHUB_SHA" \
+            --title "v$VERSION" \
+            --generate-notes

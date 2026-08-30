@@ -257,7 +257,7 @@ on unrelated quantities.
 ## Development
 
 ```bash
-uv run pytest          # 339 tests, no API key or network required
+uv run pytest          # 355 tests, no API key or network required
 uv run ruff check .
 uv run ruff format .
 ```
@@ -266,10 +266,41 @@ The test suite runs entirely offline: the financial math is pure, the streaming
 translator is driven by synthetic event streams captured from a live graph, and
 the Streamlit app is exercised via `AppTest`.
 
-There is no CI. The gate is `.claude/hooks/`, which runs ruff on write and
+`.github/workflows/ci.yml` runs the same gate, plus `uv sync --locked`, on
+every push to `main` and every pull request. It pins Python 3.11 — the floor
+`requires-python` declares, rather than the 3.14 a local `.venv` is likely to
+be — because the floor and a lockfile that has drifted from `pyproject.toml`
+are the two claims nothing else tests. The gap that leaves is worth stating:
+**nothing automated runs on 3.14**, and adding it to a `strategy.matrix` is
+what would close that. The suite needs no secrets, so the workflow is safe on
+pull requests from forks; the live check is not part of it.
+
+The local gate is `.claude/hooks/`, which runs ruff on write and
 format-lint-test before a session ends, plus a guard that refuses edits to
-`.env`, `agent_home/` and the checkpoint database. That only helps inside a
-Claude Code session — run the three commands above yourself otherwise.
+`.env`, `agent_home/` and the checkpoint database. It catches things earlier
+but covers less: it skips when there is no `.venv`, arms only when a `.py` was
+written through Edit/Write, and runs only inside a Claude Code session on one
+machine — run the three commands above yourself otherwise.
+
+### Releases
+
+A push to `main` carrying a `version` in `pyproject.toml` that has no tag yet
+publishes a GitHub Release, tagged `v<version>`, with notes generated from the
+commits since the previous one.
+
+The trigger is the *absence of a tag* rather than a diff against the previous
+commit. Diffing breaks on squash merges, re-runs and force pushes; the tag is
+the durable record of what has already shipped, so asking it makes the job
+idempotent — a bump releases once no matter how many times the workflow runs
+over it, and a run cancelled by a later push is simply picked up by the run that
+replaced it. The rule is only complete if every shipped version has a tag, which
+is why `v0.1.0` is tagged at the commit before the automation landed; without
+that baseline the first run would have published the current `main` as a new
+0.1.0 release.
+
+It runs only after the test job passes, and `contents: write` is scoped to that
+job alone — the rest of the workflow, including everything that runs on
+untrusted pull requests, holds a read-only token.
 
 ### The live check
 
