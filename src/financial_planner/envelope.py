@@ -34,7 +34,18 @@ REDACTED = "***"
 # hardcoded list of the two we happen to have today. A third key added to
 # config.py used to leak until someone remembered to extend that list, which is
 # exactly the kind of maintenance nobody remembers under a deadline.
-_SECRET_NAME_SUFFIXES = ("_API_KEY", "_KEY", "_TOKEN", "_SECRET")
+#
+# A bare ``_KEY`` was in this tuple and is not any more. It names an ordinary
+# constant as readily as a credential: a ``PARTITION_KEY = "transaction_date"``
+# added to config.py would have made `redact` replace that word everywhere it
+# appeared -- in a spending breakdown's categories, in a document's schema
+# listing, in an extracted PDF page -- and the model would read the mangled data
+# with no error raised and no log line written. Discovery is only worth having
+# while its false positives stay impossible; these three suffixes name nothing
+# but a credential. A key called ``ENCRYPTION_KEY`` is not covered and has to be
+# renamed to ``ENCRYPTION_API_KEY`` or ``ENCRYPTION_SECRET``, which is a visible
+# step rather than a silent gap.
+_SECRET_NAME_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET")
 
 # Below this length a value is not a credential, and replacing it would shred
 # the message: a one-character secret matches between every character.

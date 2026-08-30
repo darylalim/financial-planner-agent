@@ -99,7 +99,7 @@ class TestSecretsAreDiscoveredNotListed:
     """
 
     @pytest.mark.parametrize(
-        "name", ["OPENAI_API_KEY", "FRED_KEY", "PLAID_TOKEN", "WEBHOOK_SECRET"]
+        "name", ["OPENAI_API_KEY", "FRED_API_KEY", "PLAID_TOKEN", "WEBHOOK_SECRET"]
     )
     def test_a_newly_added_credential_is_redacted(self, monkeypatch, name):
         monkeypatch.setattr(config, name, "brand-new-credential-value", raising=False)
@@ -108,15 +108,31 @@ class TestSecretsAreDiscoveredNotListed:
     def test_a_short_new_credential_is_still_ignored(self, monkeypatch):
         """The eight-character floor holds for discovered names too: a short
         value would replace between every character of the message."""
-        monkeypatch.setattr(config, "FRED_KEY", "abc", raising=False)
+        monkeypatch.setattr(config, "FRED_API_KEY", "abc", raising=False)
         assert envelope.redact("abc the quick brown fox") == "abc the quick brown fox"
 
     def test_a_non_string_attribute_is_not_mistaken_for_a_secret(self, monkeypatch):
         """`config` holds Paths and None alongside the keys; neither has a
         length to floor or a value to replace."""
-        monkeypatch.setattr(config, "CACHE_KEY", None, raising=False)
-        monkeypatch.setattr(config, "LEDGER_KEY", 12345678, raising=False)
+        monkeypatch.setattr(config, "CACHE_TOKEN", None, raising=False)
+        monkeypatch.setattr(config, "LEDGER_SECRET", 12345678, raising=False)
         assert envelope.redact("nothing to strip") == "nothing to strip"
+
+    @pytest.mark.parametrize("name", ["PARTITION_KEY", "GROUP_KEY", "SORT_KEY"])
+    def test_an_ordinary_constant_ending_in_key_is_not_treated_as_a_secret(self, monkeypatch, name):
+        """Discovery is only worth having while its false positives are impossible.
+
+        A bare `_KEY` suffix names an ordinary constant as readily as a
+        credential. With it in the tuple, adding `PARTITION_KEY =
+        "transaction_date"` to config.py made `redact` strip that word out of
+        every tool result that mentioned it -- a spending breakdown's category
+        labels, a document's schema listing, an extracted PDF page -- with no
+        error raised and no log line written. The model read mangled data and
+        nothing anywhere said so.
+        """
+        monkeypatch.setattr(config, name, "transaction_date", raising=False)
+        assert envelope.redact("grouped by transaction_date") == "grouped by transaction_date"
+        assert "transaction_date" in envelope.ok({"group_by": "transaction_date"})
 
     def test_a_secret_containing_another_is_replaced_whole(self, monkeypatch):
         """Longest first, so the longer key is not left as a redacted stub."""
