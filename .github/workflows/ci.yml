@@ -44,7 +44,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@v10
+      # Pinned to an exact version, not `@v10`, because astral-sh/setup-uv
+      # stopped publishing moving major-version aliases after v7 -- `@v10` does
+      # not resolve and fails the run before a single step executes. Bump this
+      # deliberately; check `git ls-remote --tags` for what actually exists
+      # rather than assuming the major tag is there.
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           python-version: "3.11"
           # `enable-cache` already defaults to `auto`, which is on for push and
