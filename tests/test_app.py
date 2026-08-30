@@ -19,6 +19,27 @@ from streamlit.testing.v1 import AppTest
 APP_PATH = str(Path(__file__).resolve().parents[1] / "app.py")
 
 
+@pytest.fixture(autouse=True)
+def clear_streamlit_resource_cache():
+    """`app.load_agent` is `@st.cache_resource`, and that cache is process-global.
+
+    `AppTest` re-executes app.py per run, but the resource cache survives both
+    the rerun and the test: whichever test first submits a turn populates it,
+    and every later fixture's `build_agent` stand-in is then never called. It is
+    harmless while all of them assert on `stream_agent_events` -- patched at
+    module level and re-imported each run -- but the fixtures read as though
+    they control agent construction, so the first test that needs a distinct
+    agent would silently get the previous test's and pass for the wrong reason.
+
+    Autouse rather than named in each fixture, so a test added later inherits it.
+    """
+    import streamlit as st_module
+
+    st_module.cache_resource.clear()
+    yield
+    st_module.cache_resource.clear()
+
+
 @pytest.fixture
 def with_api_key(monkeypatch):
     """Pretend a key is configured so the app renders past its startup guard."""
