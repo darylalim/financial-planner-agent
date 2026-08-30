@@ -285,8 +285,12 @@ uv run python scripts/live_check.py budget    # just one
 ```
 
 It drives each tool family against the live API and inspects the assembled
-answer for those three failure shapes, and fails a scenario if any tool returned
-an error envelope. It runs against a throwaway home directory, so your own
+answer for those three failure shapes, and fails a scenario if a tool returned an
+error. The read-only Deep Agents built-ins are exempt: `read_file` on a path not
+written yet, `grep` with no hits and `ls` of a directory about to be created are
+routine probes the agent recovers from in its next step, and failing on those
+buries the signal under benign noise. They are printed, not counted. Everything
+else stays fatal, our own tools included. It runs against a throwaway home directory, so your own
 `AGENTS.md`, workspace and conversation history are untouched — `CHECKPOINT_DB`
 is derived from `AGENT_HOME` rather than pinned to the repository, which is what
 keeps the transcript out of your real database. Needs `ANTHROPIC_API_KEY`; the

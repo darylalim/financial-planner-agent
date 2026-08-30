@@ -92,6 +92,17 @@ SAVE_CLAIM = re.compile(
 )
 WRITE_TOOLS = {"write_file", "edit_file"}
 
+# The Deep Agents read-only built-ins. `streaming._tool_message_failed` now sees
+# these fail -- they report `status="error"` on the ToolMessage rather than our
+# error envelope, so they used to be invisible here -- and a failure in one is
+# routine: read_file on a path not written yet, grep with no hits, ls of a
+# directory the agent is about to create. The agent recovers in the next step.
+# Failing the scenario on those buries the signal this script exists to give
+# under benign probes, so they are reported and not counted. Everything else
+# stays fatal, including every tool of our own: an error envelope from
+# `summarize_spending` is a real failure whatever the agent did next.
+RECOVERABLE_TOOLS = {"ls", "read_file", "glob", "grep"}
+
 SCENARIOS: dict[str, list[str]] = {
     "budget": [
         "I attached my transactions at /workspace/sample-transactions.csv. "
@@ -162,11 +173,15 @@ def run_scenario(name: str, turns: list[str]) -> bool:
 
         answer = "".join(parts)
         problems = check_answer(answer, tools)
-        if failed_tools:
-            problems.append(f"tools returned errors: {failed_tools}")
+        fatal = [name for name in failed_tools if name not in RECOVERABLE_TOOLS]
+        recovered = [name for name in failed_tools if name in RECOVERABLE_TOOLS]
+        if fatal:
+            problems.append(f"tools returned errors: {fatal}")
 
         print(f"\n  tools: {tools}")
         print(f"  elapsed: {time.time() - started:.1f}s   answer chars: {len(answer)}")
+        for name in recovered:
+            print(f"  ~~ {name} returned an error the agent could recover from")
         for problem in problems:
             print(f"  !! {problem}")
         if not problems:
