@@ -13,6 +13,7 @@ globally, so nothing here can reach the network even if a stub is incomplete.
 from __future__ import annotations
 
 import json
+import re
 from types import SimpleNamespace
 
 import pandas as pd
@@ -256,21 +257,51 @@ class TestFundProfile:
         scale -- a model trusting the description would misstate a fee by 100x.
         Assert the description against the live payload so the two cannot drift
         apart again.
+
+        The description no longer states a scale of its own, because it cannot:
+        the scale depends on which provider field supplied the value. It names
+        `expense_ratio_source` and defers to the note, and the test below pins
+        the note against that source.
         """
         install(monkeypatch, FakeTicker)
         payload = call(get_fund_profile, ticker="VTI")
         description = get_fund_profile.description
 
-        assert "expense_ratio_raw" in description
-        assert "expense_ratio_note" in description
-        # No promise of a key the payload does not carry: "expense_ratio" only
-        # ever appears as the prefix of one of the two keys above.
-        assert description.count("expense_ratio") == 2
-        for key in ("expense_ratio_raw", "expense_ratio_note"):
+        keys = ("expense_ratio_raw", "expense_ratio_source", "expense_ratio_note")
+        for key in keys:
+            assert key in description
             assert key in payload
-        # The described scale must match the one the payload's own note states.
-        assert "0.03 means 0.03%" in description
-        assert "0.03 means 0.03%" in payload["expense_ratio_note"].replace("\n", " ")
+        # No promise of a key the payload does not carry. Matched by suffix
+        # rather than by counting occurrences: the description names each key
+        # where it explains it, so an occurrence count pins how many times the
+        # prose happens to mention them, which is not the invariant.
+        assert not re.findall(r"expense_ratio(?!_raw|_source|_note)", description)
+
+    @pytest.mark.parametrize(
+        ("field", "value", "scale"),
+        [
+            ("netExpenseRatio", 0.03, "percentage figure (0.03 means 0.03%)"),
+            ("annualReportExpenseRatio", 0.0003, "decimal fraction (0.0003 means 0.03%)"),
+        ],
+    )
+    def test_the_note_states_the_scale_of_the_field_the_value_came_from(
+        self, monkeypatch, field, value, scale
+    ):
+        """Regression: the two provider fields use *different* scales.
+
+        `netExpenseRatio` is a percentage figure and `annualReportExpenseRatio`
+        is a decimal fraction, but both were reported under one note asserting
+        the percentage scale as fact. A 3bp fund whose feed carries only the
+        fallback came back as 0.0003 labelled "0.0003%" -- the 100x error the
+        note exists to prevent. The test that pinned the note previously only
+        asserted the same string appeared in two places, so it held the
+        contradiction in place rather than catching it.
+        """
+        install(monkeypatch, lambda s: FakeTicker(s, info={field: value}))
+        payload = call(get_fund_profile, ticker="VTI")
+        assert payload["expense_ratio_raw"] == value
+        assert payload["expense_ratio_source"] == field
+        assert scale in payload["expense_ratio_note"]
 
 
 class TestHistoricalReturn:

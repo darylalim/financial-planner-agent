@@ -108,6 +108,26 @@ def _round(value: Any) -> float | None:
         return None
 
 
+# yfinance exposes the expense ratio through two fields on two *different*
+# scales, and which one a fund populates varies by feed. Reporting whichever is
+# present under a single note that asserts the percentage scale understates a
+# decimal-scaled fee by 100x -- which is exactly the error the note exists to
+# prevent. So the note is chosen by the field the value actually came from.
+#
+# Insertion order is *preference* order -- the net ratio is the one a fund
+# actually charges after waivers, so it wins where both are present.
+_EXPENSE_RATIO_NOTES = {
+    "netExpenseRatio": (
+        "Provider reports this as a percentage figure (0.03 means 0.03%). "
+        "Confirm against the fund's own factsheet before quoting it to the user."
+    ),
+    "annualReportExpenseRatio": (
+        "Provider reports this as a decimal fraction (0.0003 means 0.03%). "
+        "Confirm against the fund's own factsheet before quoting it to the user."
+    ),
+}
+
+
 @tool
 def get_fund_profile(ticker: str) -> str:
     """Get the expense ratio and category for a fund or ETF.
@@ -122,35 +142,36 @@ def get_fund_profile(ticker: str) -> str:
         ticker: A fund or ETF symbol, e.g. "VTI".
 
     Returns:
-        JSON with name, quote_type, category, expense_ratio_raw and
-        expense_ratio_note. The raw value is the provider's own, on the
-        provider's own scale: usually a percentage figure (0.03 means 0.03%),
-        but the feeds are not consistent about it, which is what the note says.
-        Relay that caveat and check the fund's factsheet before converting the
-        fee to dollars -- reading the value on the wrong scale is a 100x error.
-        Fields are null when the provider lacks the data.
+        JSON with name, quote_type, category, expense_ratio_raw,
+        expense_ratio_source and expense_ratio_note. The raw value is the
+        provider's own, unconverted; the two fields it can come from use
+        different scales, so expense_ratio_source names which one supplied it
+        and expense_ratio_note states that field's scale. Read the value on the
+        scale the note gives, relay the caveat, and check the fund's factsheet
+        before converting the fee to dollars -- reading it on the wrong scale is
+        a 100x error. Fields are null when the provider lacks the data.
     """
     try:
         sym = _clean([ticker])[0]
         info = yf.Ticker(sym).info or {}
-        expense = info.get("netExpenseRatio")
-        if expense is None:
-            expense = info.get("annualReportExpenseRatio")
+        expense, source = None, None
+        for field in _EXPENSE_RATIO_NOTES:
+            value = info.get(field)
+            if value is not None:
+                expense, source = value, field
+                break
         return ok(
             {
                 "ticker": sym,
                 "name": info.get("longName") or info.get("shortName"),
                 "quote_type": info.get("quoteType"),
                 "category": info.get("category"),
-                # yfinance reports this inconsistently: some feeds give percent
-                # (0.03 == 0.03%), others a decimal. Report the raw value and
-                # label the ambiguity rather than silently guessing a scale.
+                # The raw value, never converted: the provider's own number is
+                # the one the user can check against a factsheet. The scale is
+                # carried by the source and its note instead of guessed at.
                 "expense_ratio_raw": expense,
-                "expense_ratio_note": (
-                    "Provider reports this as a percentage figure (0.03 means "
-                    "0.03%). Confirm against the fund's own factsheet before "
-                    "quoting it to the user."
-                ),
+                "expense_ratio_source": source,
+                "expense_ratio_note": _EXPENSE_RATIO_NOTES.get(source),
             }
         )
     except Exception as exc:  # noqa: BLE001
