@@ -60,16 +60,20 @@ def get_quote(tickers: list[str]) -> str:
     # walking every entry looking for an "error" key -- the model reads the
     # summary, not the whole payload, when a batch is large.
     failed: list[str] = []
-    first_reason: str | None = None
+
+    # One place a failure is recorded, so the two collections cannot fall out of
+    # step. They did not yet, but a third failure branch that appended to
+    # `failed` and forgot the rest is the obvious next edit.
+    def record_failure(symbol: str, reason: str) -> None:
+        results[symbol] = {"error": reason}
+        failed.append(symbol)
+
     for sym in symbols:
         try:
             fi = yf.Ticker(sym).fast_info
             price = fi.get("lastPrice")
             if price is None:
-                reason = "no price available; check the symbol"
-                results[sym] = {"error": reason}
-                failed.append(sym)
-                first_reason = first_reason or reason
+                record_failure(sym, "no price available; check the symbol")
                 continue
             results[sym] = {
                 "price": round(float(price), 2),
@@ -80,10 +84,7 @@ def get_quote(tickers: list[str]) -> str:
                 "year_low": _round(fi.get("yearLow")),
             }
         except Exception as exc:  # noqa: BLE001 - per-symbol isolation
-            reason = f"{type(exc).__name__}: {exc}"
-            results[sym] = {"error": reason}
-            failed.append(sym)
-            first_reason = first_reason or reason
+            record_failure(sym, f"{type(exc).__name__}: {exc}")
 
     # An all-failed call differs in kind from a partial one, not in degree. A
     # partial batch still carries prices the model can use, so it stays a
@@ -92,6 +93,10 @@ def get_quote(tickers: list[str]) -> str:
     # envelope, so returning ok() here paints a wholly failed lookup green in
     # the UI while the model reads a "successful" result containing no prices.
     if failed and len(failed) == len(symbols):
+        # Read the reason back out of the payload rather than tracking it
+        # alongside: it is derivable, and a tracked copy is one more thing every
+        # future failure branch has to remember to set.
+        first_reason = results[failed[0]]["error"]
         return err(f"no quotes resolved for {', '.join(failed)}; first reason: {first_reason}")
     return ok({"quotes": results, "failed": failed})
 
