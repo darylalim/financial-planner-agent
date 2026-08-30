@@ -280,6 +280,31 @@ class TestGuardsFoundByReview:
         assert result.total_paid == pytest.approx(result.monthly_payment * result.months, abs=0.005)
         assert result.total_interest == pytest.approx(result.total_paid - 300_000, abs=0.005)
 
+    @pytest.mark.parametrize(
+        ("principal", "years"),
+        [(10_000, 1), (5_000, 2), (7_500, 3), (1_000, 7), (2_000, 0.25)],
+    )
+    def test_an_interest_free_loan_never_reports_negative_interest(self, principal, years):
+        """The rounded payment does not divide the principal, and at 0% the
+        residue is all there is: 12 * $833.33 is $9,999.96, reported as -4c of
+        interest and $9,999.96 repaid on $10,000 borrowed. `loan_payment` hands
+        that to the model as "lifetime interest", so a 0% promo balance or a
+        family loan came back as the lender paying the borrower.
+
+        The sibling test above pins the reconciliation invariant at apr=0.06,
+        where the residue hides inside six figures of interest -- which is why
+        it never saw this.
+        """
+        result = amortize_loan(principal=principal, apr=0.0, years=years)
+        assert result.total_interest >= 0.0
+        assert result.total_paid >= principal
+
+    def test_an_interest_free_loan_repays_exactly_what_was_borrowed(self):
+        """The headline case, pinned exactly rather than as an inequality."""
+        result = amortize_loan(principal=10_000, apr=0.0, years=1)
+        assert result.total_paid == 10_000.0
+        assert result.total_interest == 0.0
+
     def test_amortize_rounds_a_fractional_term_to_whole_months(self):
         """The docstring promises nearest-month rounding; pin it."""
         assert amortize_loan(principal=10_000, apr=0.06, years=30.5).months == 366

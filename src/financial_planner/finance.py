@@ -262,6 +262,15 @@ def amortize_loan(*, principal: float, apr: float, years: float) -> Amortization
     # $647,514.00) and a user with a calculator can see the discrepancy.
     payment = round(payment, 2)
     total = payment * n
+    # ...but a rounded payment does not divide the principal exactly, and the
+    # residue is signed. Where the interest is smaller than that residue the
+    # total lands *below* the principal: an interest-free $10,000 over 12
+    # months totals 12 * $833.33 = $9,999.96 and so reports -4c of interest --
+    # the lender paying the borrower to hold their money, which `loan_payment`
+    # hands to the model as "lifetime interest". In a real schedule the final
+    # payment is the one that settles the balance, so it absorbs the residue;
+    # the total therefore never falls below what was borrowed.
+    total = float(max(total, principal))
     return AmortizationResult(
         monthly_payment=payment,
         total_paid=round(total, 2),
