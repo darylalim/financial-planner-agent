@@ -229,6 +229,18 @@ the formats it wanted without saying what to do instead, so the model retried
 with different column names, failed identically, and answered without the
 numbers.
 
+Deliberate repetition is not the same as hand-copying, and the first version of
+this was both. Only the opening sentence differs between the two runtime
+statements; everything after it is `PDF_ROUTES_FORWARD`, composed by
+`_with_pdf_routes`, and a test pins that both messages *end* in it. Written out
+twice, they had already drifted inside one commit — the refusal forbade totalling
+the transaction lines by hand and the `aggregation` note did not, on the path the
+agent reaches first. That text also states what provenance alone left out: the
+totals a PDF prints are the document's claim, and nothing in it tells a tampered
+statement from a genuine one, so they are attributed to the statement rather than
+reported as the household's verified numbers. The skill is the one copy no
+constant can reach, so a test reads the file and fails when it drifts.
+
 ### The result envelope
 
 Every tool returns JSON through `envelope.py` and returns errors rather than
@@ -289,7 +301,7 @@ on unrelated quantities.
 ## Development
 
 ```bash
-uv run pytest          # 360 tests, no API key or network required
+uv run pytest          # 366 tests, no API key or network required
 uv run ruff check .
 uv run ruff format .
 ```

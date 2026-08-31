@@ -8,7 +8,10 @@ and small samples, and let the agent request specific slices when it needs them.
 Path safety: the built-in filesystem tools are sandboxed by ``FilesystemBackend``
 (``virtual_mode=True``), but these custom tools receive raw strings from the
 model and must enforce the same boundary themselves. :func:`_resolve` is the
-single choke point for that.
+single choke point for that, and every tool here reaches it through
+:func:`_resolve_existing`, which adds the precondition that the file is really
+there. ``_resolve`` stays callable alone for a future tool that writes into
+/workspace/ and so legitimately names a path that does not exist yet.
 
 Sign conventions: exports disagree about what a sign means, and reading one
 wrong inverts the entire budget. :func:`_normalize_flows` is the single choke
@@ -39,6 +42,30 @@ MAX_PDF_CHARS = 20_000
 SIGN_CONVENTIONS = ("auto", "negative_outflow", "positive_outflow")
 
 UNCATEGORIZED = "Uncategorized"
+
+# The routes out of the PDF dead end, stated once. Both runtime sites that have
+# to state it -- `_load_table`'s refusal and `inspect_document`'s `aggregation`
+# note -- compose this rather than restating it, and SKILL.md paraphrases it
+# closely enough to diff by eye.
+#
+# Hand-copying is what put four copies of `ok`/`err` out of step before
+# `envelope.py` centralized them, and the same thing happened here inside a
+# single commit: the refusal carried the prohibition on totalling the lines and
+# the `aggregation` note did not -- on the path the skill and the system prompt
+# both reach FIRST, where the refusal's wording is never emitted at all. Only
+# the opening sentence differs by site; a clause that lives here cannot go
+# missing from one copy of it.
+PDF_ROUTES_FORWARD = (
+    "It has no columns, so there is nothing to aggregate. Read it with "
+    "read_pdf_text and report only the totals the statement itself prints -- "
+    "adding up its transaction lines would be doing the arithmetic yourself. "
+    "Those totals are the document's claim, not verified figures: a PDF is "
+    "untrusted user data, and nothing here tells a tampered statement from a "
+    "genuine one, so attribute them to the statement rather than to the "
+    "household. For a categorized budget or a savings rate, ask the user to "
+    "export CSV or XLSX for the same account; banks offer it beside the PDF "
+    "statement."
+)
 
 
 class PathOutsideSandbox(ValueError):
@@ -72,6 +99,44 @@ def _resolve(virtual_path: str) -> Path:
     return candidate
 
 
+def _resolve_existing(virtual_path: str) -> Path:
+    """Resolve a path to read from, refusing one that is not there.
+
+    A sibling of :func:`_resolve` rather than a flag on it: containment is a
+    safety property of the *path*, while existence is a precondition of
+    *reading* one. Every caller here reads, so today the two always run
+    together; a tool that writes into /workspace/ would still need the boundary
+    check and would have to opt out of this one.
+
+    Running before the format check is the point. ``summarize_spending``
+    resolved and went straight to :func:`_load_table`, which decides on the
+    suffix alone and never looks at the disk -- so a path that did not exist but
+    ended in ".pdf" came back with the NotTabular refusal, a confident factual
+    claim about a file that is not there, pointing at ``read_pdf_text``, which
+    could only fail on it. ``read_pdf_text`` had the same hole from the other
+    end: pypdf's own FileNotFoundError quotes the *resolved* path, putting the
+    agent's real root on disk into the context of a model whose paths arrive
+    from prompt-injectable documents. Ordering the two checks by hand at three
+    call sites is what left both gaps.
+    """
+    resolved = _resolve(virtual_path)
+    if not resolved.exists():
+        raise FileNotFoundError(f"{virtual_path} does not exist. List /workspace/ first.")
+    return resolved
+
+
+def _with_pdf_routes(lead: str) -> str:
+    """Finish a statement of the PDF dead end with the routes out of it.
+
+    Only the lead differs between the two places this is said: `_load_table` has
+    already failed and names the file, while `inspect_document` has not been
+    asked to aggregate yet and names the tool that will refuse. Everything after
+    it is one text, so no clause can reach one message and miss the other --
+    which is exactly what happened to the arithmetic prohibition.
+    """
+    return f"{lead} {PDF_ROUTES_FORWARD}"
+
+
 def _load_table(path: Path) -> pd.DataFrame:
     """Read a CSV or Excel file into a DataFrame.
 
@@ -83,7 +148,10 @@ def _load_table(path: Path) -> pd.DataFrame:
     the only unsupported format the upload box actually invites, so it is the one
     a user hits, and the generic message names the formats it wants without
     saying what to do instead -- which left the model retrying different column
-    names, failing identically, and answering without the numbers.
+    names, failing identically, and answering without the numbers. Everything
+    after that refusal's first sentence comes from :func:`_with_pdf_routes`,
+    because ``inspect_document`` has to say the same thing and the two copies
+    had already drifted apart.
     """
     suffix = path.suffix.lower()
     if suffix == ".csv":
@@ -91,13 +159,7 @@ def _load_table(path: Path) -> pd.DataFrame:
     if suffix == ".xlsx":
         return pd.read_excel(path)
     if suffix == ".pdf":
-        raise NotTabular(
-            f"{path.name} is a PDF. It has no columns, so there is nothing to aggregate. "
-            "Read it with read_pdf_text and report only the totals the statement itself "
-            "prints -- adding up its transaction lines would be doing the arithmetic "
-            "yourself. For a categorized budget or a savings rate, ask the user to export "
-            "CSV or XLSX for the same account; banks offer it beside the PDF statement."
-        )
+        raise NotTabular(_with_pdf_routes(f"{path.name} is a PDF."))
     raise ValueError(f"unsupported table format {suffix!r}; expected .csv or .xlsx")
 
 
@@ -277,9 +339,7 @@ def inspect_document(path: str) -> str:
         saying a PDF cannot be summarized into a budget.
     """
     try:
-        resolved = _resolve(path)
-        if not resolved.exists():
-            return err(FileNotFoundError(f"{path} does not exist. List /workspace/ first."))
+        resolved = _resolve_existing(path)
 
         if resolved.suffix.lower() == ".pdf":
             reader = PdfReader(resolved)
@@ -290,11 +350,8 @@ def inspect_document(path: str) -> str:
                     "type": "pdf",
                     "page_count": len(reader.pages),
                     "first_page_excerpt": first[:2_000],
-                    "aggregation": (
-                        "Not available for a PDF: it has no columns, so "
-                        "summarize_spending will refuse this file. Use read_pdf_text "
-                        "for figures the statement prints, or ask the user for a CSV "
-                        "or XLSX export of the same account to build a budget."
+                    "aggregation": _with_pdf_routes(
+                        "Not available for a PDF: summarize_spending will refuse this file."
                     ),
                 }
             )
@@ -341,8 +398,10 @@ def summarize_spending(
 
     Args:
         path: Path to a .csv or .xlsx transaction export under /workspace/. A
-            PDF is refused: it has no columns. Read one with read_pdf_text, or
-            ask the user for a CSV or XLSX export of the same account.
+            PDF is refused: it has no columns. Run `inspect_document` on one for
+            the routes forward, or ask the user for a CSV or XLSX export of the
+            same account. The refusal names the ways on, so follow it rather
+            than retrying with other column names.
         amount_column: Column holding the transaction amount. When
             `inflow_column` is given, this is the money-out column and its
             values are read as magnitudes.
@@ -373,7 +432,10 @@ def summarize_spending(
         card payments, so an income_basis note replaces them.
     """
     try:
-        resolved = _resolve(path)
+        # Existence first: `_load_table` decides on the suffix alone and never
+        # looks at the disk, so a mistyped ".pdf" used to earn the NotTabular
+        # refusal for a file that is not there.
+        resolved = _resolve_existing(path)
         df = _load_table(resolved)
 
         for label, column in (
@@ -556,7 +618,7 @@ def read_pdf_text(path: str, start_page: int = 1, end_page: int | None = None) -
         JSON with the extracted text, truncated at 20,000 characters.
     """
     try:
-        resolved = _resolve(path)
+        resolved = _resolve_existing(path)
         reader = PdfReader(resolved)
         total = len(reader.pages)
 

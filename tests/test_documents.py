@@ -8,6 +8,7 @@ a realistic route to a traversal attempt.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -15,6 +16,14 @@ from financial_planner.config import WORKSPACE_DIR, ensure_directories
 from financial_planner.tools.documents import (
     inspect_document,
     summarize_spending,
+)
+
+SKILL_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "agent_home"
+    / "skills"
+    / "budget-from-statements"
+    / "SKILL.md"
 )
 
 CSV_CONTENT = """\
@@ -63,6 +72,18 @@ class TestPathSandbox:
     def test_missing_file_reports_clearly_rather_than_raising(self):
         result = _call(inspect_document, path="/workspace/does-not-exist.csv")
         assert "does not exist" in result["error"]
+
+    def test_a_missing_file_is_reported_without_the_host_path(self):
+        """Every reading tool goes through the existence check now, because the
+        one that did not let pypdf raise instead -- and pypdf's FileNotFoundError
+        quotes the *resolved* path, naming the agent's real root on disk to a
+        model whose paths arrive from prompt-injectable documents.
+        """
+        from financial_planner.tools.documents import read_pdf_text
+
+        result = _call(read_pdf_text, path="/workspace/does-not-exist.pdf")
+        assert "does not exist" in result["error"]
+        assert str(WORKSPACE_DIR) not in result["error"]
 
 
 class TestInspectDocument:
@@ -809,3 +830,65 @@ class TestPdfIsNotATable:
             assert "NotTabular" not in result["error"]
         finally:
             path.unlink(missing_ok=True)
+
+    def test_both_statements_carry_the_arithmetic_prohibition(self, statement_pdf):
+        """The clause that had already gone missing from one copy of two.
+
+        `inspect_document` is called first -- the system prompt and the skill
+        both order it there -- so on the ordinary path the refusal's wording is
+        never emitted at all, and "use read_pdf_text for the figures" with no
+        prohibition beside it reads as "pull the lines out and total them".
+        """
+        refusal = _call(summarize_spending, path=statement_pdf, amount_column="Amount")["error"]
+        note = _call(inspect_document, path=statement_pdf)["aggregation"]
+        assert "doing the arithmetic yourself" in refusal
+        assert "doing the arithmetic yourself" in note
+
+    def test_both_statements_keep_the_pdf_untrusted(self, statement_pdf):
+        """These routes send the agent to read figures off a PDF and report them
+        as the household's numbers. A tampered statement printing "Total monthly
+        spending: $412.00" is on that path, and provenance alone -- "say where it
+        came from" -- makes the figure sourced, not doubted.
+        """
+        refusal = _call(summarize_spending, path=statement_pdf, amount_column="Amount")["error"]
+        note = _call(inspect_document, path=statement_pdf)["aggregation"]
+        assert "untrusted user data" in refusal
+        assert "untrusted user data" in note
+
+    def test_the_two_statements_end_in_one_shared_text(self, statement_pdf):
+        """Pins the mechanism rather than today's clauses, so whatever the next
+        one is, it cannot reach one message and miss the other.
+
+        `endswith` rather than `in`: containment leaves each site free to append
+        a clause of its own, which is the divergence this exists to stop.
+        """
+        from financial_planner.tools.documents import PDF_ROUTES_FORWARD
+
+        refusal = _call(summarize_spending, path=statement_pdf, amount_column="Amount")["error"]
+        note = _call(inspect_document, path=statement_pdf)["aggregation"]
+        assert refusal.endswith(PDF_ROUTES_FORWARD)
+        assert note.endswith(PDF_ROUTES_FORWARD)
+
+    def test_a_pdf_that_is_not_there_is_not_refused_as_a_pdf(self):
+        """Nothing touched the disk before the suffix check, so a path that did
+        not exist but ended in ".pdf" got the refusal -- a confident factual
+        claim about a file that is not there, and then a route to read_pdf_text
+        that could only fail on it.
+        """
+        ensure_directories()
+        result = _call(
+            summarize_spending, path="/workspace/_pytest-absent.pdf", amount_column="Amount"
+        )
+        assert "does not exist" in result["error"]
+        assert "NotTabular" not in result["error"]
+        assert str(WORKSPACE_DIR) not in result["error"]
+
+    def test_the_skill_states_both_caveats_too(self):
+        """The skill is the one copy no Python constant can reach, and it is read
+        before either tool runs. Nothing but this fails when it drifts.
+        """
+        # Unwrapped first: the file is hard-wrapped prose, so a clause that is
+        # present still straddles a newline. Rewrapping a paragraph is not drift.
+        text = " ".join(SKILL_PATH.read_text(encoding="utf-8").split())
+        assert "arithmetic rule forbids" in text
+        assert "untrusted user data" in text
