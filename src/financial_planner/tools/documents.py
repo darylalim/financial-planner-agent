@@ -49,6 +49,10 @@ class AmbiguousSignConvention(ValueError):
     """Raised when an amount column cannot be read as spending or as income."""
 
 
+class NotTabular(ValueError):
+    """Raised when a document is readable but has no columns to aggregate."""
+
+
 def _resolve(virtual_path: str) -> Path:
     """Map an agent-visible path to a real path, refusing anything outside root.
 
@@ -74,12 +78,26 @@ def _load_table(path: Path) -> pd.DataFrame:
     Legacy ``.xls`` is deliberately absent. Reading BIFF needs ``xlrd``, which is
     not a dependency, so accepting one only bought a file the sidebar listed and
     every tool call then failed on.
+
+    ``.pdf`` gets its own refusal rather than falling into the generic one. It is
+    the only unsupported format the upload box actually invites, so it is the one
+    a user hits, and the generic message names the formats it wants without
+    saying what to do instead -- which left the model retrying different column
+    names, failing identically, and answering without the numbers.
     """
     suffix = path.suffix.lower()
     if suffix == ".csv":
         return pd.read_csv(path)
     if suffix == ".xlsx":
         return pd.read_excel(path)
+    if suffix == ".pdf":
+        raise NotTabular(
+            f"{path.name} is a PDF. It has no columns, so there is nothing to aggregate. "
+            "Read it with read_pdf_text and report only the totals the statement itself "
+            "prints -- adding up its transaction lines would be doing the arithmetic "
+            "yourself. For a categorized budget or a savings rate, ask the user to export "
+            "CSV or XLSX for the same account; banks offer it beside the PDF statement."
+        )
     raise ValueError(f"unsupported table format {suffix!r}; expected .csv or .xlsx")
 
 
@@ -255,7 +273,8 @@ def inspect_document(path: str) -> str:
 
     Returns:
         JSON describing the file: for tables, columns/dtypes/row_count/preview;
-        for PDFs, page count and the first page's text.
+        for PDFs, page count, the first page's text, and an `aggregation` note
+        saying a PDF cannot be summarized into a budget.
     """
     try:
         resolved = _resolve(path)
@@ -271,6 +290,12 @@ def inspect_document(path: str) -> str:
                     "type": "pdf",
                     "page_count": len(reader.pages),
                     "first_page_excerpt": first[:2_000],
+                    "aggregation": (
+                        "Not available for a PDF: it has no columns, so "
+                        "summarize_spending will refuse this file. Use read_pdf_text "
+                        "for figures the statement prints, or ask the user for a CSV "
+                        "or XLSX export of the same account to build a budget."
+                    ),
                 }
             )
 
@@ -315,7 +340,9 @@ def summarize_spending(
     one the wrong way round reports every charge as income.
 
     Args:
-        path: Path to a .csv or .xlsx transaction export under /workspace/.
+        path: Path to a .csv or .xlsx transaction export under /workspace/. A
+            PDF is refused: it has no columns. Read one with read_pdf_text, or
+            ask the user for a CSV or XLSX export of the same account.
         amount_column: Column holding the transaction amount. When
             `inflow_column` is given, this is the money-out column and its
             values are read as magnitudes.

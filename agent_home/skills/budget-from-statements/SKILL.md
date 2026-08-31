@@ -24,6 +24,15 @@ they can afford to save, or wants a budget.
 `ls /workspace/` to see what is there. If nothing, ask the user to upload a CSV
 or XLSX export from their bank.
 
+**A PDF statement cannot be budgeted from.** The upload box accepts PDFs and
+both `inspect_document` and `read_pdf_text` will read one, but a PDF has no
+columns, so `summarize_spending` refuses it — and adding its transaction lines
+up yourself is exactly what the arithmetic rule forbids. If the statement prints
+the totals the user asked for, read them off it with `read_pdf_text` and say
+where they came from. For a categorized budget, monthly averages or a savings
+rate, ask for a CSV or XLSX export of the same account; banks offer one beside
+the PDF.
+
 ### 2. Inspect before aggregating
 
 Run `inspect_document` on every file. You need the real column names — guessing

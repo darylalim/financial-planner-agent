@@ -18,8 +18,11 @@ cp .env.example .env      # add your ANTHROPIC_API_KEY
 uv run streamlit run app.py
 ```
 
-Then attach a CSV/XLSX/PDF statement in the chat box, or try
+Then attach a CSV or XLSX transaction export in the chat box, or try
 `examples/sample-transactions.csv` to see it work with no data of your own.
+PDFs are accepted too, but for *reading* only — a budget needs columns, so
+`summarize_spending` works on CSV and XLSX. See "PDFs are readable, not
+aggregatable" below.
 
 ## How it's put together
 
@@ -173,7 +176,7 @@ analysis goes wrong.
 | `plan_debt_payoff` | Multi-debt simulation, avalanche or snowball |
 | `test_withdrawal_plan` | Retirement drawdown sustainability |
 | `inspect_document` | Schema and preview of a CSV/XLSX/PDF |
-| `summarize_spending` | Aggregate transactions by category and month, with savings rate and monthly averages |
+| `summarize_spending` | Aggregate a CSV/XLSX export by category and month, with savings rate and monthly averages |
 | `read_pdf_text` | Extract a page range from a PDF |
 | `get_quote` | Current prices; names the symbols that failed, and errors if none resolve |
 | `get_fund_profile` | Expense ratio and category |
@@ -196,6 +199,35 @@ fail open on a rename.
 
 Document tools **summarize rather than dump** — a year of transactions is 5,000+
 rows, and returning them raw would crowd out the rest of the session.
+
+### PDFs are readable, not aggregatable
+
+The upload box accepts PDFs, and `inspect_document` and `read_pdf_text` both
+read them. `summarize_spending` does not: a PDF has no columns, so there is
+nothing to group by category or by month.
+
+That gap is not going to be closed by parsing the PDF. Extracting a transaction
+table out of a rendered statement produces rows of unknown fidelity, and a
+budget built on them would be a number the user cannot check — which is the
+failure the arithmetic rule exists to prevent. A bank that emits a PDF statement
+almost always offers a CSV export beside it, and that export is authoritative in
+a way the rendering is not.
+
+So the refusal is the feature, and what matters is that it carries the route
+forward. `_load_table` raises `NotTabular` — its own type, because `envelope.err`
+serializes the class name and the model picks its recovery off it — with a
+message naming both options: read the printed totals with `read_pdf_text`, or
+ask for a CSV/XLSX export. `inspect_document` says the same thing in its
+*success* payload, under an `aggregation` key, since the skill tells the agent to
+call it before any other document tool — which makes it the earliest point the
+dead end can be seen. The budget skill states it a third time, before either
+tool runs.
+
+Three statements of one fact is deliberate. The generic
+`unsupported table format '.pdf'` it replaced was accurate and useless: it named
+the formats it wanted without saying what to do instead, so the model retried
+with different column names, failed identically, and answered without the
+numbers.
 
 ### The result envelope
 
@@ -257,7 +289,7 @@ on unrelated quantities.
 ## Development
 
 ```bash
-uv run pytest          # 355 tests, no API key or network required
+uv run pytest          # 360 tests, no API key or network required
 uv run ruff check .
 uv run ruff format .
 ```

@@ -740,3 +740,72 @@ class TestDateColumnDefectsFoundByReview:
             summarize_spending, path=sample_csv, amount_column="Amount", date_column="Date"
         )
         assert "date_parsing" not in result
+
+
+class TestPdfIsNotATable:
+    """The upload box invites a PDF, so the model reaches summarize_spending
+    with one. The generic "unsupported table format" refusal it used to get was
+    accurate and useless: it named the formats it wanted without naming a route
+    forward, so the model retried with different column names, failed the same
+    way, and answered without the numbers.
+    """
+
+    @pytest.fixture
+    def statement_pdf(self):
+        from pypdf import PdfWriter
+
+        ensure_directories()
+        path = WORKSPACE_DIR / "_pytest-statement.pdf"
+        writer = PdfWriter()
+        writer.add_blank_page(width=200, height=200)
+        with path.open("wb") as handle:
+            writer.write(handle)
+        yield "/workspace/_pytest-statement.pdf"
+        path.unlink(missing_ok=True)
+
+    def test_the_refusal_names_its_own_type(self, statement_pdf):
+        """`envelope.err` serializes the class name and the model picks its
+        recovery off it, so a PDF must not arrive as a bare ValueError.
+        """
+        result = _call(summarize_spending, path=statement_pdf, amount_column="Amount")
+        assert "NotTabular" in result["error"]
+
+    def test_the_refusal_carries_both_routes_forward(self, statement_pdf):
+        """Read the printed totals, or get a real export. A refusal that states
+        neither is what sent the model back round the same failing call.
+        """
+        result = _call(summarize_spending, path=statement_pdf, amount_column="Amount")
+        assert "read_pdf_text" in result["error"]
+        assert "CSV or XLSX" in result["error"]
+
+    def test_inspect_document_says_so_before_the_call_is_made(self, statement_pdf):
+        """The skill tells the agent to run inspect_document before any other
+        document tool, which makes this the earliest point the dead end is
+        visible -- and it is a success payload, not an error.
+        """
+        result = _call(inspect_document, path=statement_pdf)
+        assert "error" not in result
+        assert "summarize_spending will refuse" in result["aggregation"]
+        assert "read_pdf_text" in result["aggregation"]
+
+    def test_a_pdf_is_still_readable(self, statement_pdf):
+        """The fix must not turn a readable format into a rejected one."""
+        from financial_planner.tools.documents import read_pdf_text
+
+        result = _call(read_pdf_text, path=statement_pdf)
+        assert "error" not in result
+        assert result["page_count"] == 1
+
+    def test_a_genuinely_unknown_format_keeps_the_generic_message(self):
+        """Only .pdf earns a bespoke refusal; .txt has no route forward to name."""
+        ensure_directories()
+        path = WORKSPACE_DIR / "_pytest-notes.txt"
+        path.write_text("hello", encoding="utf-8")
+        try:
+            result = _call(
+                summarize_spending, path="/workspace/_pytest-notes.txt", amount_column="Amount"
+            )
+            assert "unsupported table format" in result["error"]
+            assert "NotTabular" not in result["error"]
+        finally:
+            path.unlink(missing_ok=True)
