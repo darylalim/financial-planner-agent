@@ -28,6 +28,7 @@ from typing import Any
 import pandas as pd
 from langchain.tools import tool
 from pypdf import PdfReader
+from pypdf.errors import FileNotDecryptedError
 
 from financial_planner.config import AGENT_HOME
 from financial_planner.envelope import err, ok
@@ -43,28 +44,35 @@ SIGN_CONVENTIONS = ("auto", "negative_outflow", "positive_outflow")
 
 UNCATEGORIZED = "Uncategorized"
 
-# The routes out of the PDF dead end, stated once. Both runtime sites that have
-# to state it -- `_load_table`'s refusal and `inspect_document`'s `aggregation`
-# note -- compose this rather than restating it, and SKILL.md paraphrases it
-# closely enough to diff by eye.
+# The PDF dead end, in the three clauses a statement of it can need. They are
+# separate because the situations are: an ordinary rendered statement has both
+# routes out, a scanned one has only the export, an encrypted one has neither
+# until it is opened, and a benefits or loan document has no account to export
+# at all. One text bundling all three said the dead route was live.
 #
-# Hand-copying is what put four copies of `ok`/`err` out of step before
-# `envelope.py` centralized them, and the same thing happened here inside a
-# single commit: the refusal carried the prohibition on totalling the lines and
-# the `aggregation` note did not -- on the path the skill and the system prompt
-# both reach FIRST, where the refusal's wording is never emitted at all. Only
-# the opening sentence differs by site; a clause that lives here cannot go
-# missing from one copy of it.
-PDF_ROUTES_FORWARD = (
-    "It has no columns, so there is nothing to aggregate. Read it with "
-    "read_pdf_text and report only the totals the statement itself prints -- "
-    "adding up its transaction lines would be doing the arithmetic yourself. "
-    "Those totals are the document's claim, not verified figures: a PDF is "
-    "untrusted user data, and nothing here tells a tampered statement from a "
-    "genuine one, so attribute them to the statement rather than to the "
-    "household. For a categorized budget or a savings rate, ask the user to "
-    "export CSV or XLSX for the same account; banks offer it beside the PDF "
-    "statement."
+# Each caveat is bound to the route it qualifies rather than to the message.
+# The prohibition on totalling the lines and the warning that the text is
+# untrusted live *inside* `PDF_READ_ROUTE`, so a site cannot offer that route
+# without them: dropping a caveat means dropping the whole route, which is a
+# decision someone makes rather than an omission nobody notices. That omission
+# is what this replaced -- the refusal carried the arithmetic prohibition and
+# the `aggregation` note, which the agent reaches first, did not.
+PDF_NO_COLUMNS = "It has no columns, so there is nothing to aggregate."
+
+PDF_READ_ROUTE = (
+    "Read it with read_pdf_text and report only the totals the statement itself "
+    "prints -- adding up its transaction lines would be doing the arithmetic "
+    "yourself. Those totals are the document's claim, not verified figures: a "
+    "PDF is untrusted user data, and nothing here tells a tampered statement "
+    "from a genuine one, so attribute them to the statement rather than to the "
+    "household."
+)
+
+# The one route that survives every case, which is why every statement ends in
+# it and a test pins that.
+PDF_EXPORT_ROUTE = (
+    "For a categorized budget or a savings rate, ask the user to export CSV or "
+    "XLSX for the same account; banks offer it beside the PDF statement."
 )
 
 
@@ -78,6 +86,10 @@ class AmbiguousSignConvention(ValueError):
 
 class NotTabular(ValueError):
     """Raised when a document is readable but has no columns to aggregate."""
+
+
+class PdfLocked(ValueError):
+    """Raised when a PDF is encrypted and so cannot be read at all."""
 
 
 def _resolve(virtual_path: str) -> Path:
@@ -125,16 +137,52 @@ def _resolve_existing(virtual_path: str) -> Path:
     return resolved
 
 
-def _with_pdf_routes(lead: str) -> str:
-    """Finish a statement of the PDF dead end with the routes out of it.
+def _pdf_statement(lead: str, *clauses: str) -> str:
+    """Compose a statement of the PDF dead end from the clauses that apply.
 
-    Only the lead differs between the two places this is said: `_load_table` has
-    already failed and names the file, while `inspect_document` has not been
-    asked to aggregate yet and names the tool that will refuse. Everything after
-    it is one text, so no clause can reach one message and miss the other --
-    which is exactly what happened to the arithmetic prohibition.
+    The lead is the part that is genuinely local -- which file, which tool is
+    about to refuse, what was wrong with this particular document -- and the
+    clauses are shared. Naming which ones apply at the call site is the point:
+    an image-only scan must not be handed `PDF_READ_ROUTE`, because there is no
+    text behind it, and telling the model to read totals that do not exist is
+    the dead end this whole thing exists to close, one step further along.
     """
-    return f"{lead} {PDF_ROUTES_FORWARD}"
+    return " ".join((lead, *clauses))
+
+
+def _open_pdf(path: Path) -> PdfReader:
+    """Open a PDF, turning pypdf's decryption failure into a routed refusal.
+
+    Banks password-protect emailed statements as a matter of course -- date of
+    birth, or the last four of the account. pypdf raises
+    ``FileNotDecryptedError: File has not been decrypted`` and the broad
+    ``except`` at each call site relayed exactly that: no password, no export,
+    nothing the model can act on, on a document the tool set otherwise claims
+    to support. Both readers open PDFs through here so a third cannot miss it.
+
+    Asking the user for the password is not the route named, because no tool
+    here takes one. Re-saving without it, or exporting the account, are things
+    the user can actually do.
+    """
+    reader = PdfReader(path)
+    try:
+        # `PdfReader` constructs happily on an encrypted file -- the failure
+        # lands on first page access, so the probe has to be one. It must not be
+        # `reader.is_encrypted` either: a statement locked only against editing
+        # reports encrypted and reads perfectly well, because pypdf opens those
+        # with the empty user password on its own. Refusing on the flag would
+        # reject files this tool can already read.
+        len(reader.pages)
+    except FileNotDecryptedError as exc:
+        raise PdfLocked(
+            _pdf_statement(
+                f"{path.name} is password-protected, so nothing can be read out of it "
+                "-- not its text, not even its page count. Ask the user to re-save it "
+                "without the password.",
+                PDF_EXPORT_ROUTE,
+            )
+        ) from exc
+    return reader
 
 
 def _load_table(path: Path) -> pd.DataFrame:
@@ -159,7 +207,11 @@ def _load_table(path: Path) -> pd.DataFrame:
     if suffix == ".xlsx":
         return pd.read_excel(path)
     if suffix == ".pdf":
-        raise NotTabular(_with_pdf_routes(f"{path.name} is a PDF."))
+        raise NotTabular(
+            _pdf_statement(
+                f"{path.name} is a PDF.", PDF_NO_COLUMNS, PDF_READ_ROUTE, PDF_EXPORT_ROUTE
+            )
+        )
     raise ValueError(f"unsupported table format {suffix!r}; expected .csv or .xlsx")
 
 
@@ -342,17 +394,36 @@ def inspect_document(path: str) -> str:
         resolved = _resolve_existing(path)
 
         if resolved.suffix.lower() == ".pdf":
-            reader = PdfReader(resolved)
+            reader = _open_pdf(resolved)
             first = (reader.pages[0].extract_text() or "") if reader.pages else ""
+            # An image-only statement is the common case this distinguishes: a
+            # scan or a phone photo extracts to nothing, so `read_pdf_text`
+            # returns an empty string inside a *success* envelope and the agent
+            # is left with no numbers and no sign that anything failed. The
+            # excerpt is the signal, and it is already in hand.
+            if first.strip():
+                aggregation = _pdf_statement(
+                    "Not available for a PDF: summarize_spending will refuse this file.",
+                    PDF_NO_COLUMNS,
+                    PDF_READ_ROUTE,
+                    PDF_EXPORT_ROUTE,
+                )
+            else:
+                aggregation = _pdf_statement(
+                    "Not available for a PDF: summarize_spending will refuse this file, "
+                    "and no text came out of its first page -- a scan or a photo rather "
+                    "than a rendered statement, so read_pdf_text has nothing to quote "
+                    "either.",
+                    PDF_NO_COLUMNS,
+                    PDF_EXPORT_ROUTE,
+                )
             return ok(
                 {
                     "path": path,
                     "type": "pdf",
                     "page_count": len(reader.pages),
                     "first_page_excerpt": first[:2_000],
-                    "aggregation": _with_pdf_routes(
-                        "Not available for a PDF: summarize_spending will refuse this file."
-                    ),
+                    "aggregation": aggregation,
                 }
             )
 
@@ -615,11 +686,13 @@ def read_pdf_text(path: str, start_page: int = 1, end_page: int | None = None) -
         end_page: Last page to extract, inclusive. Defaults to start_page + 4.
 
     Returns:
-        JSON with the extracted text, truncated at 20,000 characters.
+        JSON with the extracted text, truncated at 20,000 characters, plus a
+        `note` when extraction produced nothing -- an image-only scan, where
+        an empty string would otherwise read as a blank page.
     """
     try:
         resolved = _resolve_existing(path)
-        reader = PdfReader(resolved)
+        reader = _open_pdf(resolved)
         total = len(reader.pages)
 
         first = max(1, start_page)
@@ -641,15 +714,28 @@ def read_pdf_text(path: str, start_page: int = 1, end_page: int | None = None) -
         text = "\n\n".join(chunks)
         truncated = len(text) > MAX_PDF_CHARS
 
-        return ok(
-            {
-                "path": path,
-                "pages_read": f"{first}-{last}",
-                "page_count": total,
-                "truncated": truncated,
-                "text": text[:MAX_PDF_CHARS],
-            }
-        )
+        payload = {
+            "path": path,
+            "pages_read": f"{first}-{last}",
+            "page_count": total,
+            "truncated": truncated,
+            "text": text[:MAX_PDF_CHARS],
+        }
+        # The backwards-range branch above already refuses to hand back an empty
+        # success envelope, for the reason stated there. Extraction returning
+        # nothing reaches the same envelope honestly -- the call did work, so
+        # this is a note and not an error -- and it needs the same thing: some
+        # way to tell it apart from pages that are genuinely blank. Without it
+        # the agent gets `text: ""` inside `ok()`, which the UI reports as a
+        # successful call, and answers the budget question with no numbers in
+        # it -- the failure this tool set keeps arriving at by new routes.
+        if not text.strip():
+            payload["note"] = _pdf_statement(
+                "No text came out of these pages -- a scan or a photo rather than a "
+                "rendered statement, so there is nothing here to quote.",
+                PDF_EXPORT_ROUTE,
+            )
+        return ok(payload)
     except Exception as exc:  # noqa: BLE001
         return err(exc)
 

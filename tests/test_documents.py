@@ -26,6 +26,41 @@ SKILL_PATH = (
     / "SKILL.md"
 )
 
+
+def _pdf_bytes(text: str) -> bytes:
+    """Build a one-page PDF that really carries extractable text.
+
+    `PdfWriter.add_blank_page` produces a PDF with no text in it, which is now a
+    *different* case -- a scan -- so an ordinary-statement fixture cannot be
+    built that way any more. pypdf cannot draw text and reportlab is not a
+    dependency, so the file is assembled here: five objects and a real xref
+    table, which pypdf reads without a warning.
+    """
+    stream = b"BT /F1 12 Tf 20 100 Td (" + text.encode("ascii") + b") Tj ET"
+    objects = [
+        b"<</Type/Catalog/Pages 2 0 R>>",
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>",
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 300 200]"
+        b"/Resources<</Font<</F1 5 0 R>>>>/Contents 4 0 R>>",
+        b"<</Length " + str(len(stream)).encode() + b">>stream\n" + stream + b"\nendstream",
+        b"<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>",
+    ]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for number, body in enumerate(objects, start=1):
+        offsets.append(len(out))
+        out += str(number).encode() + b" 0 obj\n" + body + b"\nendobj\n"
+    start_xref = len(out)
+    out += b"xref\n0 " + str(len(objects) + 1).encode() + b"\n0000000000 65535 f \n"
+    for offset in offsets:
+        out += f"{offset:010d} 00000 n \n".encode()
+    out += (
+        b"trailer\n<</Size " + str(len(objects) + 1).encode() + b"/Root 1 0 R>>\n"
+        b"startxref\n" + str(start_xref).encode() + b"\n%%EOF\n"
+    )
+    return bytes(out)
+
+
 CSV_CONTENT = """\
 Date,Description,Category,Amount
 2026-01-03,Paycheck,Income,4200.00
@@ -773,14 +808,9 @@ class TestPdfIsNotATable:
 
     @pytest.fixture
     def statement_pdf(self):
-        from pypdf import PdfWriter
-
         ensure_directories()
         path = WORKSPACE_DIR / "_pytest-statement.pdf"
-        writer = PdfWriter()
-        writer.add_blank_page(width=200, height=200)
-        with path.open("wb") as handle:
-            writer.write(handle)
+        path.write_bytes(_pdf_bytes("Total monthly spending 412.00"))
         yield "/workspace/_pytest-statement.pdf"
         path.unlink(missing_ok=True)
 
@@ -855,19 +885,38 @@ class TestPdfIsNotATable:
         assert "untrusted user data" in refusal
         assert "untrusted user data" in note
 
-    def test_the_two_statements_end_in_one_shared_text(self, statement_pdf):
-        """Pins the mechanism rather than today's clauses, so whatever the next
-        one is, it cannot reach one message and miss the other.
+    def test_every_statement_ends_in_the_route_that_always_survives(self, statement_pdf):
+        """`PDF_EXPORT_ROUTE` is live in every case -- rendered, scanned, locked
+        -- which is why every statement of the dead end ends in it.
 
         `endswith` rather than `in`: containment leaves each site free to append
         a clause of its own, which is the divergence this exists to stop.
         """
-        from financial_planner.tools.documents import PDF_ROUTES_FORWARD
+        from financial_planner.tools.documents import PDF_EXPORT_ROUTE
 
         refusal = _call(summarize_spending, path=statement_pdf, amount_column="Amount")["error"]
         note = _call(inspect_document, path=statement_pdf)["aggregation"]
-        assert refusal.endswith(PDF_ROUTES_FORWARD)
-        assert note.endswith(PDF_ROUTES_FORWARD)
+        assert refusal.endswith(PDF_EXPORT_ROUTE)
+        assert note.endswith(PDF_EXPORT_ROUTE)
+
+    def test_the_read_route_cannot_be_offered_without_its_caveats(self):
+        """The point of splitting the text into clauses. Both caveats live
+        inside the route they qualify, so a site that offers the route carries
+        them by construction -- dropping one means dropping the whole route,
+        which is a decision rather than an omission.
+        """
+        from financial_planner.tools.documents import PDF_READ_ROUTE
+
+        assert "doing the arithmetic yourself" in PDF_READ_ROUTE
+        assert "untrusted user data" in PDF_READ_ROUTE
+
+    def test_a_rendered_statement_still_gets_the_read_route(self, statement_pdf):
+        """The scanned and locked cases must not cost the ordinary one its
+        route: text came out, so reading the printed totals is still on.
+        """
+        from financial_planner.tools.documents import PDF_READ_ROUTE
+
+        assert PDF_READ_ROUTE in _call(inspect_document, path=statement_pdf)["aggregation"]
 
     def test_a_pdf_that_is_not_there_is_not_refused_as_a_pdf(self):
         """Nothing touched the disk before the suffix check, so a path that did
@@ -892,3 +941,106 @@ class TestPdfIsNotATable:
         text = " ".join(SKILL_PATH.read_text(encoding="utf-8").split())
         assert "arithmetic rule forbids" in text
         assert "untrusted user data" in text
+
+
+class TestPdfThatCannotBeRead:
+    """Two statements the tool set claims to support and could not act on: a
+    scan, which extracts to nothing, and a password-protected file, which is how
+    banks email them. Both used to end the same way -- no numbers, and nothing
+    saying what to do about it.
+    """
+
+    @pytest.fixture
+    def scanned_pdf(self):
+        from pypdf import PdfWriter
+
+        ensure_directories()
+        path = WORKSPACE_DIR / "_pytest-scanned.pdf"
+        writer = PdfWriter()
+        writer.add_blank_page(width=200, height=200)
+        with path.open("wb") as handle:
+            writer.write(handle)
+        yield "/workspace/_pytest-scanned.pdf"
+        path.unlink(missing_ok=True)
+
+    @pytest.fixture
+    def locked_pdf(self):
+        from pypdf import PdfWriter
+
+        ensure_directories()
+        path = WORKSPACE_DIR / "_pytest-locked.pdf"
+        writer = PdfWriter()
+        writer.add_blank_page(width=200, height=200)
+        writer.encrypt("hunter2")
+        with path.open("wb") as handle:
+            writer.write(handle)
+        yield "/workspace/_pytest-locked.pdf"
+        path.unlink(missing_ok=True)
+
+    def test_a_scan_is_not_offered_the_read_route(self, scanned_pdf):
+        """Naming a route that cannot work is the dead end one step along: the
+        agent reads "report the totals it prints", finds none, and answers
+        without the numbers.
+        """
+        from financial_planner.tools.documents import PDF_EXPORT_ROUTE, PDF_READ_ROUTE
+
+        note = _call(inspect_document, path=scanned_pdf)["aggregation"]
+        assert PDF_READ_ROUTE not in note
+        assert "scan or a photo" in note
+        assert note.endswith(PDF_EXPORT_ROUTE)
+
+    def test_reading_a_scan_says_so_instead_of_returning_a_blank(self, scanned_pdf):
+        """`text: ""` inside a success envelope is indistinguishable from a page
+        that is genuinely blank, and `_is_error_result` reports the call as ok.
+        """
+        from financial_planner.tools.documents import read_pdf_text
+
+        result = _call(read_pdf_text, path=scanned_pdf)
+        assert "error" not in result
+        assert result["text"] == ""
+        assert "nothing here to quote" in result["note"]
+
+    def test_a_locked_pdf_names_its_own_type_and_a_route(self, locked_pdf):
+        """`envelope.err` serializes the class name and the model keys recovery
+        off it, so this cannot arrive as pypdf's FileNotDecryptedError -- which
+        says "File has not been decrypted" and nothing a model can act on.
+        """
+        from financial_planner.tools.documents import PDF_EXPORT_ROUTE
+
+        result = _call(inspect_document, path=locked_pdf)
+        assert "PdfLocked" in result["error"]
+        assert "re-save it without the password" in result["error"]
+        assert result["error"].endswith(PDF_EXPORT_ROUTE)
+
+    def test_a_pdf_locked_only_against_editing_still_reads(self):
+        """The regression the obvious guard would have caused. Banks lock the
+        emailed statement against editing, which sets an owner password and
+        leaves the user password empty; `is_encrypted` is True for those, but
+        pypdf opens them with the empty password and the text reads out fine.
+        Refusing on the flag would reject statements that already worked.
+        """
+        from pypdf import PdfWriter
+
+        ensure_directories()
+        path = WORKSPACE_DIR / "_pytest-noedit.pdf"
+        writer = PdfWriter()
+        writer.add_blank_page(width=200, height=200)
+        writer.encrypt(user_password="", owner_password="secret")
+        with path.open("wb") as handle:
+            writer.write(handle)
+        try:
+            result = _call(inspect_document, path="/workspace/_pytest-noedit.pdf")
+            assert "error" not in result
+            assert result["page_count"] == 1
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_reading_a_locked_pdf_fails_the_same_way(self, locked_pdf):
+        """Both readers open PDFs through one place, so the route cannot be
+        stated at one of them and missing at the other.
+        """
+        from financial_planner.tools.documents import read_pdf_text
+
+        result = _call(read_pdf_text, path=locked_pdf)
+        assert "PdfLocked" in result["error"]
+        assert "FileNotDecryptedError" not in result["error"]

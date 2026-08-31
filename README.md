@@ -241,6 +241,18 @@ statement from a genuine one, so they are attributed to the statement rather tha
 reported as the household's verified numbers. The skill is the one copy no
 constant can reach, so a test reads the file and fails when it drifts.
 
+**Not every PDF has both routes, which is why the text is clauses and not one
+string.** A scan or a phone photo of a statement extracts to nothing, so telling
+the agent to read the totals it prints is the same dead end one step further
+along — `read_pdf_text` returned an empty string inside a *success* envelope,
+which reads as "these pages are blank" rather than "this cannot be extracted".
+A password-protected statement, which is how banks email them, could not be
+opened at all and relayed pypdf's `File has not been decrypted` with no route on
+it. Both now say what is actually available, and both keep the export route,
+which is the one that survives every case. The read route carries the arithmetic
+and untrusted-data caveats *inside* it, so a site that offers the route cannot
+drop them — the caveat goes where its route goes.
+
 ### The result envelope
 
 Every tool returns JSON through `envelope.py` and returns errors rather than
@@ -301,7 +313,7 @@ on unrelated quantities.
 ## Development
 
 ```bash
-uv run pytest          # 366 tests, no API key or network required
+uv run pytest          # 373 tests, no API key or network required
 uv run ruff check .
 uv run ruff format .
 ```
