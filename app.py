@@ -83,12 +83,17 @@ st.set_page_config(
 )
 
 
-@st.cache_resource
+@st.cache_resource(show_spinner="Starting the planner...")
 def load_agent(model_name: str):
-    """Build the agent once per session and reuse it across reruns.
+    """Build the agent once and reuse it across reruns.
 
     Cached as a *resource* rather than data: it owns a SQLite connection and a
     model client, neither of which should be rebuilt on every keystroke.
+
+    The spinner text is overridden because the default names the *function* --
+    "Running `load_agent(...)`." -- and this is the one place an internal
+    identifier would reach a UI that maintains TOOL_LABELS precisely so the user
+    never sees one.
     """
     ensure_directories()
     return build_agent(model=model_name, checkpointer=build_checkpointer())
