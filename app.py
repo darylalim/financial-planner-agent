@@ -300,16 +300,25 @@ if user_text or uploaded_names:
             # as LaTeX, and one quoting a backtick or a bracket -- which HTTP
             # clients do when they echo a request back -- mangles or truncates
             # the only description of the failure the user gets.
-            st.error(escape_markdown(detail), icon=":material/error:")
+            safe_detail = escape_markdown(detail)
+            st.error(safe_detail, icon=":material/error:")
             # Nothing is sent to the *checkpointer* -- it already holds whatever
             # partial state the graph committed. But session_state.messages is
             # display only (see the module docstring), and leaving it without a
             # reply means the next rerun redraws a question the agent appears to
             # have ignored, the st.error having gone with the old page.
+            #
+            # It stores the *escaped* string, not the raw one. This copy is the
+            # durable half of the pair -- the st.error goes with the old page,
+            # this is redrawn on every later run -- and that redraw runs
+            # escape_dollars, which substitutes only "$", so a raw exception's
+            # backticks, brackets and dunders would all render. Escaping once is
+            # stable under the redraw: escape_dollars skips a dollar that is
+            # already backslashed.
             st.session_state.messages.append(
                 {
                     "role": "assistant",
-                    "content": f"_This turn failed and was not answered: {detail}_",
+                    "content": f"_This turn failed and was not answered: {safe_detail}_",
                 }
             )
 

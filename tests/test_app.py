@@ -249,6 +249,15 @@ class TestFailedTurns:
         app.pills[0].set_value(_raw_options(app)[0]).run()
         assert any("\\$2,000" in e.value for e in app.error)
 
+    def test_the_transcript_copy_is_escaped_too(self, with_api_key, failing_turn):
+        """Regression: only the st.error copy was escaped, and it is the one
+        that does not last. The transcript copy is redrawn on every later run,
+        through escape_dollars, which leaves every other metacharacter live.
+        """
+        app = _run()
+        app.pills[0].set_value(_raw_options(app)[0]).run()
+        assert "\\$2,000" in app.session_state["messages"][-1]["content"]
+
 
 class TestStreamedAnswerIsComplete:
     def test_every_token_survives_the_render_throttle(self, with_api_key, monkeypatch):
