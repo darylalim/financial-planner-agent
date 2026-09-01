@@ -138,7 +138,12 @@ with st.sidebar:
     )
     if documents:
         for name in documents:
-            st.caption(f":material/description: {name}")
+            # escape_markdown, for the reason the upload warning below gives:
+            # the name reached disk from the browser and st.caption renders
+            # markdown, so "a`b.csv" opens a code span that swallows every
+            # filename listed after it. Only the name is escaped -- the icon
+            # directive around it is ours and has to keep rendering.
+            st.caption(f":material/description: {escape_markdown(name)}")
     else:
         st.caption("No documents yet. Attach one in the chat box below.")
 

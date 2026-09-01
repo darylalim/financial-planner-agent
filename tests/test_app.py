@@ -205,6 +205,32 @@ class TestUploadsThatCannotBeSaved:
         assert any(".." in w.value for w in app.warning)
 
 
+class TestDocumentListing:
+    """Regression: the sidebar rendered workspace filenames straight into
+    st.caption, which renders markdown. The name is browser-supplied and
+    `uploads.destination_for` strips only the directory component from it, never
+    a markdown metacharacter -- so a backtick opened a code span that swallowed
+    every filename listed after it. The two other places a name or a raw string
+    is shown already escape it.
+    """
+
+    def test_a_filename_is_escaped_before_it_reaches_the_sidebar(
+        self, with_api_key, monkeypatch, tmp_path
+    ):
+        from financial_planner import config as config_module
+        from financial_planner.rendering import escape_markdown
+
+        monkeypatch.setattr(config_module, "WORKSPACE_DIR", tmp_path)
+        name = "a`b $200 statement.csv"
+        (tmp_path / name).write_bytes(b"col\n1\n")
+
+        captions = [c.value for c in _run().caption]
+        # Both directions. Asserting only the escaped form would still pass if
+        # escape_markdown were ever reduced to the identity function.
+        assert any(escape_markdown(name) in c for c in captions), captions
+        assert not any(name in c for c in captions), captions
+
+
 class TestFailedTurns:
     """Regression: a turn that raised left a user message with no reply, and the
     st.error vanished on the next rerun, so the transcript read as if the agent
