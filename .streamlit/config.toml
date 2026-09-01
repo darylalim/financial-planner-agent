@@ -1,0 +1,24 @@
+# Streamlit's own defaults, corrected for an app that holds a household's
+# finances and has no authentication of any kind.
+
+[server]
+# Unset, server.address is "0.0.0.0" -- Streamlit binds the dual-stack wildcard
+# and prints a Network URL. Everything this app guards would then be reachable
+# from any device on the same network: the sidebar's list of statement
+# filenames, a chat session over those documents, a write path into
+# agent_home/workspace/, and spend on the owner's API key. The agent's own
+# defences -- virtual_mode, the checkpoint DB kept outside AGENT_HOME, redact()
+# -- all assume the attacker arrived inside an uploaded document, not over TCP.
+#
+# README's "single-user by design" is a scaling limit stated in prose; this is
+# the line that enforces it. A CLI --server.address still wins, and this file is
+# only read when `streamlit run` is invoked from the repo root -- which is the
+# command README's Quickstart and CLAUDE.md both give.
+#
+# Not "::1": _bind_socket picks AF_INET6 for any address containing a colon, and
+# ::1 is not the v6 wildcard, so IPv4 loopback would stop resolving.
+address = "127.0.0.1"
+
+# An empty allowedHosts accepts any Host header, so a hostile page that resolves
+# its own name to 127.0.0.1 reaches a loopback-bound app as same-origin.
+allowedHosts = ["localhost", "127.0.0.1"]
