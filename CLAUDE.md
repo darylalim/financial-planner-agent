@@ -71,6 +71,16 @@ history. `tools/documents.py` re-enforces the same boundary independently becaus
 receives paths straight from model output. The agent sees `/workspace/`, `/skills/`,
 `/AGENTS.md`; on disk these live under `agent_home/`.
 
+**`.streamlit/config.toml` is the other half of that boundary, and it is a whole file
+that can go missing.** Streamlit's `server.address` defaults to `0.0.0.0`, and
+`_get_bind_address()` widens an unset value to the dual-stack `::` — so without that file
+`uv run streamlit run app.py` serves the sidebar's statement filenames, the chat box, the
+upload path and the API key's spend to every device on the network, unauthenticated. The
+agent-side defences above do not reach it: they all assume the attacker arrived inside an
+uploaded document. Deleting the file breaks nothing and prints no warning; a Network URL
+simply reappears. `allowedHosts` is pinned beside `address` because an empty list accepts
+any `Host` header. The README's "single-user by design" is the prose, this is the latch.
+
 **`CHECKPOINT_DB` has two branches and both are load-bearing.** Default home →
 `PROJECT_ROOT/planner_state.sqlite` (the historic name, so an existing install's saved
 conversations are not orphaned). Redirected home → `AGENT_HOME.parent /
@@ -118,6 +128,18 @@ the paragraph boundary between the agent's preamble and its answer — but read 
 only off chunks that carry text, since Anthropic sends a content-free chunk bearing the
 new id first. Synthetic streams that jump text→text pass while the real provider fails;
 the tests now replay the real interleaving.
+
+**The assistant's transcript entry is reserved before the turn runs, never appended
+after.** `app.py` puts a placeholder dict into `st.session_state.messages` ahead of the
+first token and then mutates it. Appending at the end loses a race no `except` can win:
+Streamlit delivers rerun and stop requests as `ScriptControlException`, which subclasses
+`BaseException` precisely so user code cannot catch it, and every `st.*` call in the
+streaming loop is a delivery point — Stop, toolbar Rerun, `runOnSave`, a click on any
+widget left mounted. The user's message is already in the list, so the loser of that race
+is a question with no reply under it, redrawn as an agent that ignored it. That same dict
+is also what keeps text already painted when a turn fails part-way, and what carries
+`tool_errors` past the post-turn `st.rerun()` that destroys the `st.status` they were
+written into. `TestATurnAlwaysLeavesAReply` and `TestToolActivity` pin both.
 
 **Two escaping functions, deliberately distinct — using the wrong one is a bug class.**
 `escape_dollars` is for model *prose* headed to `st.markdown`: `$...$` renders as inline
