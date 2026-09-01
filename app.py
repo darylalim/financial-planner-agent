@@ -41,6 +41,10 @@ UPLOAD_TYPES = ["csv", "xlsx", "pdf"]
 # speed this is still several repaints a second, so the text keeps flowing.
 STREAM_REDRAW_CHARS = 32
 
+# What a turn leaves behind when it never reaches an answer at all. The reserved
+# slot in the turn block below explains what can end one that way.
+INTERRUPTED = "_This turn was interrupted before the agent replied. Ask again to retry._"
+
 TOOL_LABELS = {
     "project_savings": "Projecting savings",
     "required_savings_rate": "Solving for a savings rate",
@@ -177,6 +181,15 @@ for message in st.session_state.messages:
         # escape_dollars everywhere text reaches st.markdown: "$2.2M at 7% and
         # $1.5M at 5%" would otherwise render the middle as LaTeX.
         st.markdown(escape_dollars(message["content"]))
+        # The tool failures of that turn. They are also written live into an
+        # st.status, but that is collapsed by default and the post-turn rerun
+        # destroys it, so this is the only place they outlive the turn --
+        # and _tool_message_failed exists precisely so that a tool which failed
+        # is not read as one that worked.
+        for failed in message.get("tool_errors", ()):
+            # escape_markdown, not escape_dollars: a tool name arrives on a
+            # ToolMessage, so it is model output rather than prose of ours.
+            st.caption(f":material/error: {escape_markdown(failed)} returned an error")
 
 # Onboarding chips, shown only on an empty conversation.
 #
@@ -185,8 +198,9 @@ for message in st.session_state.messages:
 # script before the stash can be read, and on the next run the pills widget
 # still holds the same selection, so it stashes and reruns again forever.
 picked: str | None = None
+suggestions_slot = st.empty()
 if not st.session_state.messages:
-    picked = st.pills("Try asking:", list(SUGGESTIONS), label_visibility="collapsed")
+    picked = suggestions_slot.pills("Try asking:", list(SUGGESTIONS), label_visibility="collapsed")
 
 prompt = st.chat_input(
     "Ask about your finances, or attach a statement",
@@ -230,6 +244,14 @@ if st.session_state.unsaved_uploads:
     )
 
 if user_text or uploaded_names:
+    # Unmount the chips before the turn starts. They are the one input left live
+    # while the agent streams -- st.chat_input carries submit_mode="disable" for
+    # exactly this reason -- and a click on one is a rerun request that lands at
+    # the next st.* call inside the streaming loop. The reserved reply below
+    # stops that orphaning the question, but the turn is still thrown away along
+    # with everything it spent, so the better fix is not to offer the click.
+    suggestions_slot.empty()
+
     # Tell the agent where the files landed; it cannot see the upload widget.
     if uploaded_names:
         listing = ", ".join(f"/workspace/{n}" for n in uploaded_names)
@@ -238,6 +260,24 @@ if user_text or uploaded_names:
 
     assert user_text is not None
     st.session_state.messages.append({"role": "user", "content": user_text})
+
+    # The assistant's half of the exchange is appended now, before a single
+    # token exists, and filled in as the turn goes. Every write below mutates
+    # this dict rather than appending a second one.
+    #
+    # It is the reservation that matters, not the placeholder text. Streamlit
+    # delivers rerun and stop requests as ScriptControlException, which
+    # subclasses BaseException specifically so that user code cannot catch it,
+    # and every st.* call in the streaming loop is a delivery point -- the Stop
+    # button, the toolbar's Rerun, runOnSave, and a click on any widget still
+    # mounted all arrive that way. An append at the *end* of the turn therefore
+    # loses that race, leaving the question in the transcript with no reply,
+    # which the next redraw shows as an agent that ignored it. A slot claimed
+    # up front cannot be lost: at worst it still says the turn was interrupted.
+    tool_errors: list[str] = []
+    reply = {"role": "assistant", "content": INTERRUPTED, "tool_errors": tool_errors}
+    st.session_state.messages.append(reply)
+
     with st.chat_message("user"):
         st.markdown(escape_dollars(user_text))
 
@@ -271,6 +311,11 @@ if user_text or uploaded_names:
                     activity.write(f":material/play_arrow: {label}")
                 elif isinstance(event, ToolEnd):
                     if not event.ok:
+                        tool_errors.append(event.name)
+                        # Open the status. Everything else in it is progress
+                        # chatter; this is the one line worth interrupting the
+                        # answer for, and it is invisible while collapsed.
+                        activity.update(expanded=True)
                         activity.write(
                             f":material/error: {event.name} returned an error; "
                             "the agent will retry or work around it."
@@ -290,7 +335,7 @@ if user_text or uploaded_names:
             # has run.
             answer_slot.markdown(escape_dollars(answer))
 
-            st.session_state.messages.append({"role": "assistant", "content": answer})
+            reply["content"] = answer
             completed = True
 
         except Exception as exc:  # noqa: BLE001 - surface any failure in the UI
@@ -320,12 +365,17 @@ if user_text or uploaded_names:
             # backticks, brackets and dunders would all render. Escaping once is
             # stable under the redraw: escape_dollars skips a dollar that is
             # already backslashed.
-            st.session_state.messages.append(
-                {
-                    "role": "assistant",
-                    "content": f"_This turn failed and was not answered: {safe_detail}_",
-                }
-            )
+            partial = streamed.strip()
+            if partial:
+                # Whatever the user already watched appear is kept. It is still
+                # painted in answer_slot, so dropping it means the next redraw
+                # silently deletes text they read -- and a half-answer plus a
+                # reason is far more use than a reason alone.
+                reply["content"] = (
+                    f"{partial}\n\n_The turn failed part-way through this reply: {safe_detail}_"
+                )
+            else:
+                reply["content"] = f"_This turn failed and was not answered: {safe_detail}_"
 
     if completed:
         # Redraw once the turn is done. The sidebar's document list and the

@@ -129,6 +129,63 @@ def failing_tool_turn(monkeypatch):
     monkeypatch.setattr(streaming_module, "stream_agent_events", _call_a_tool)
 
 
+@pytest.fixture
+def tool_turn(monkeypatch):
+    """A tool reports an error and the agent answers anyway, so the turn ends in
+    the st.rerun() that used to take the only record of the failure with it.
+    """
+    from financial_planner import agent as agent_module
+    from financial_planner import streaming as streaming_module
+
+    monkeypatch.setattr(agent_module, "build_agent", lambda **_: object())
+    monkeypatch.setattr(agent_module, "build_checkpointer", lambda: None)
+
+    def _call_a_tool(_agent, _messages, _config):
+        yield streaming_module.ToolStart("summarize_spending")
+        yield streaming_module.ToolEnd("summarize_spending", ok=False)
+        yield streaming_module.Token("I could not read that file.")
+
+    monkeypatch.setattr(streaming_module, "stream_agent_events", _call_a_tool)
+
+
+@pytest.fixture
+def turn_that_fails_mid_answer(monkeypatch):
+    """Text reaches the screen, and then the connection drops."""
+    from financial_planner import agent as agent_module
+    from financial_planner import streaming as streaming_module
+
+    monkeypatch.setattr(agent_module, "build_agent", lambda **_: object())
+    monkeypatch.setattr(agent_module, "build_checkpointer", lambda: None)
+
+    def _drop(_agent, _messages, _config):
+        yield streaming_module.Token("Your projected balance is $1.2M and the shortfall ")
+        raise RuntimeError("upstream refused a quote for $2,000 of $VOO")
+
+    monkeypatch.setattr(streaming_module, "stream_agent_events", _drop)
+
+
+@pytest.fixture
+def turn_interrupted_by_a_rerun(monkeypatch):
+    """A rerun request delivered mid-stream, exactly as a click on a widget that
+    stayed live, the Stop button or runOnSave delivers one: as a
+    ScriptControlException, which subclasses BaseException so that no
+    ``except Exception`` in the turn can see it.
+    """
+    import streamlit as st_module
+
+    from financial_planner import agent as agent_module
+    from financial_planner import streaming as streaming_module
+
+    monkeypatch.setattr(agent_module, "build_agent", lambda **_: object())
+    monkeypatch.setattr(agent_module, "build_checkpointer", lambda: None)
+
+    def _interrupt(_agent, _messages, _config):
+        yield streaming_module.Token("Working on it")
+        st_module.rerun()
+
+    monkeypatch.setattr(streaming_module, "stream_agent_events", _interrupt)
+
+
 class _FakeUpload:
     """Stands in for Streamlit's UploadedFile (only .name and .getvalue used)."""
 
@@ -281,6 +338,22 @@ class TestFailedTurns:
         assert "\\$2,000" in app.session_state["messages"][-1]["content"]
 
 
+class TestChipsCannotInterruptATurn:
+    def test_the_chips_are_unmounted_before_the_agent_streams(self, with_api_key, failing_turn):
+        """They are the one input left live during a turn -- st.chat_input has
+        submit_mode="disable" -- and a click on one is a rerun request honoured
+        inside the streaming loop, throwing the turn and its spend away.
+
+        The failing fixture is the one that can see it: a turn that completes
+        ends in st.rerun(), and the chips are then absent because the transcript
+        is no longer empty, whether or not the turn ever unmounted them.
+        """
+        app = _run()
+        assert len(app.pills) == 1
+        app.pills[0].set_value(_raw_options(app)[0]).run()
+        assert len(app.pills) == 0
+
+
 class TestToolActivity:
     """The tool branch of the stream loop. Every other fixture yields nothing
     but Tokens, so TOOL_LABELS and the tool-failure notice -- the only st.*
@@ -298,6 +371,44 @@ class TestToolActivity:
         app = _run()
         app.pills[0].set_value(_raw_options(app)[0]).run()
         assert "returned an error" in app.status[0].markdown[1].value
+
+    def test_a_tool_failure_outlives_the_post_turn_rerun(self, with_api_key, tool_turn):
+        """Regression: it was written only into an st.status, which is collapsed
+        by default and is destroyed by the rerun that ends a finished turn. The
+        one signal that a tool did not do what the answer implies it did was
+        readable for a few hundred milliseconds, behind a click.
+        """
+        app = _run()
+        app.pills[0].set_value(_raw_options(app)[0]).run()
+        assert app.session_state["messages"][-1]["tool_errors"] == ["summarize_spending"]
+        assert any("returned an error" in c.value for c in app.caption)
+
+
+class TestATurnAlwaysLeavesAReply:
+    """Regression: the assistant entry was appended once an answer existed, so
+    every early exit left the user's question in the transcript with nothing
+    under it -- which redraws as an agent that was asked and ignored it.
+    """
+
+    def test_text_already_on_screen_survives_a_failure(
+        self, with_api_key, turn_that_fails_mid_answer
+    ):
+        app = _run()
+        app.pills[0].set_value(_raw_options(app)[0]).run()
+        content = app.session_state["messages"][-1]["content"]
+        assert "Your projected balance is $1.2M" in content
+        assert "RuntimeError" in content
+
+    def test_an_interrupted_turn_still_records_a_reply(
+        self, with_api_key, turn_interrupted_by_a_rerun
+    ):
+        """A rerun mid-stream is a BaseException, so the turn's own except never
+        runs. Only a slot claimed before the first token survives it.
+        """
+        app = _run()
+        app.pills[0].set_value(_raw_options(app)[0]).run()
+        assert [m["role"] for m in app.session_state["messages"]] == ["user", "assistant"]
+        assert "interrupted" in app.session_state["messages"][-1]["content"]
 
 
 class TestStreamedAnswerIsComplete:
