@@ -107,6 +107,28 @@ def failing_turn(monkeypatch):
     monkeypatch.setattr(streaming_module, "stream_agent_events", _explode)
 
 
+@pytest.fixture
+def failing_tool_turn(monkeypatch):
+    """A turn that calls a tool, has it report an error, and then fails.
+
+    It has to fail. A completed turn ends in st.rerun(), and the st.status the
+    tool lines are written into goes with the page that held it, so a turn that
+    succeeds leaves nothing to assert against.
+    """
+    from financial_planner import agent as agent_module
+    from financial_planner import streaming as streaming_module
+
+    monkeypatch.setattr(agent_module, "build_agent", lambda **_: object())
+    monkeypatch.setattr(agent_module, "build_checkpointer", lambda: None)
+
+    def _call_a_tool(_agent, _messages, _config):
+        yield streaming_module.ToolStart("summarize_spending")
+        yield streaming_module.ToolEnd("summarize_spending", ok=False)
+        raise RuntimeError("upstream refused a quote for $2,000 of $VOO")
+
+    monkeypatch.setattr(streaming_module, "stream_agent_events", _call_a_tool)
+
+
 class _FakeUpload:
     """Stands in for Streamlit's UploadedFile (only .name and .getvalue used)."""
 
@@ -257,6 +279,25 @@ class TestFailedTurns:
         app = _run()
         app.pills[0].set_value(_raw_options(app)[0]).run()
         assert "\\$2,000" in app.session_state["messages"][-1]["content"]
+
+
+class TestToolActivity:
+    """The tool branch of the stream loop. Every other fixture yields nothing
+    but Tokens, so TOOL_LABELS and the tool-failure notice -- the only st.*
+    calls in app.py -- went unexecuted by the whole suite.
+    """
+
+    def test_a_tool_is_announced_by_its_label_not_its_identifier(
+        self, with_api_key, failing_tool_turn
+    ):
+        app = _run()
+        app.pills[0].set_value(_raw_options(app)[0]).run()
+        assert app.status[0].markdown[0].value == ":material/play_arrow: Summarizing spending"
+
+    def test_a_tool_that_reports_an_error_says_so(self, with_api_key, failing_tool_turn):
+        app = _run()
+        app.pills[0].set_value(_raw_options(app)[0]).run()
+        assert "returned an error" in app.status[0].markdown[1].value
 
 
 class TestStreamedAnswerIsComplete:
