@@ -113,3 +113,26 @@ class TestSaveUploads:
         assert saved == ["january.csv"]
         assert skipped == ["february.csv"]
         assert (tmp_path / "january.csv").exists()
+
+    def test_a_failed_write_leaves_nothing_behind(self, tmp_path, monkeypatch):
+        """Regression: reporting a skip is only true if nothing was written.
+
+        write_bytes truncates the file into existence and writes through a
+        buffer, so a failure part-way leaves however much had flushed at the very
+        path just reported as unwritten -- nothing, or a prefix of the statement.
+        The sidebar lists whatever is on disk, so it would show a statement that
+        is not there, and a prefix is the worse half: it parses, so the agent
+        totals a partial month with nothing looking wrong.
+        """
+
+        def _fail_after_a_partial_flush(self, _data):
+            # write_text goes through Path.open, never the patched write_bytes.
+            self.write_text("date,amount\n2026-03-02,-14.20\n")
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr(Path, "write_bytes", _fail_after_a_partial_flush)
+        saved, skipped = save_uploads([FakeUpload("march.csv")], tmp_path)
+
+        assert saved == []
+        assert skipped == ["march.csv"]
+        assert list(tmp_path.iterdir()) == []

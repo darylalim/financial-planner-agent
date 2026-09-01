@@ -1,7 +1,7 @@
 """Persisting user-uploaded documents into the agent's workspace.
 
-Two hazards handled here, both because the filename comes from the browser and
-is fully attacker-controlled:
+Three hazards handled here. Two of them come from the filename, which arrives
+from the browser and is fully attacker-controlled:
 
 * **Traversal.** An upload named ``../../.env`` must land in the workspace, not
   above it. Only the final path component is ever used.
@@ -9,10 +9,17 @@ is fully attacker-controlled:
   often called exactly what January's was. Overwriting would destroy the earlier
   statement and silently change the contents of a path that a previously written
   analysis already cites.
+
+The third has nothing to do with the name:
+
+* **A write that fails.** It is reported through the same channel as an unusable
+  name rather than raised, and whatever it left on disk is removed again, so
+  "skipped" keeps meaning that nothing was written. ``save_uploads`` says why.
 """
 
 from __future__ import annotations
 
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -61,6 +68,8 @@ def save_uploads(files: list[Any], directory: Path) -> tuple[list[str], list[str
     on disk are never named to the caller and the agent is never told they
     exist; in the Streamlit app it also escapes the turn's own try/except, which
     is the only place an exception is redacted and escaped before it renders.
+    The failed destination is unlinked as part of that, so a skip stays a skip
+    and does not leave a truncated file for the sidebar to list.
 
     Args:
         files: Objects exposing ``.name`` and ``.getvalue()`` (Streamlit's
@@ -83,6 +92,18 @@ def save_uploads(files: list[Any], directory: Path) -> tuple[list[str], list[str
         try:
             destination.write_bytes(item.getvalue())
         except OSError:
+            # write_bytes opens "wb" -- truncating the file into existence --
+            # and writes through a buffer, so a failure during the write rather
+            # than at the open (a full disk, an I/O error) leaves however much
+            # had flushed: nothing, or a prefix of the statement. The name is
+            # about to be reported as *not* written, and the sidebar lists
+            # whatever is on disk, so leaving it shows the user a statement that
+            # is not there -- and a prefix is the worse half, because it parses,
+            # so the agent totals a partial month with nothing looking wrong.
+            # destination_for returns a path nothing was at, so this can remove
+            # only our own failed write.
+            with suppress(OSError):
+                destination.unlink(missing_ok=True)
             skipped.append(item.name)
             continue
         saved.append(destination.name)
