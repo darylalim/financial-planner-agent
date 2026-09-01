@@ -219,7 +219,7 @@ if st.session_state.unsaved_uploads:
     # prose, so nothing in it should render.
     unsaved = ", ".join(escape_markdown(n) for n in st.session_state.unsaved_uploads)
     st.warning(
-        f"Could not save: {unsaved}. The name carries no usable filename; "
+        f"Could not save: {unsaved}. The name is unusable or the write failed; "
         "rename the file and attach it again.",
         icon=":material/warning:",
     )
