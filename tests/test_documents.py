@@ -61,6 +61,28 @@ def _pdf_bytes(text: str) -> bytes:
     return bytes(out)
 
 
+def _write_multipage_pdf(path, pages):
+    """Write a PDF whose pages carry text or nothing, in the given order.
+
+    `pages` is a list of strings and Nones -- None being a page with no text
+    layer, which is what a scanned or photographed page extracts to. Cover
+    pages and part-image statements are the shapes that broke a detector
+    sampling a single page, so building them has to be as easy as saying so.
+    """
+    import io
+
+    from pypdf import PdfReader, PdfWriter
+
+    writer = PdfWriter()
+    for content in pages:
+        if content is None:
+            writer.add_blank_page(width=300, height=200)
+        else:
+            writer.append(PdfReader(io.BytesIO(_pdf_bytes(content))))
+    with path.open("wb") as handle:
+        writer.write(handle)
+
+
 CSV_CONTENT = """\
 Date,Description,Category,Amount
 2026-01-03,Paycheck,Income,4200.00
@@ -998,7 +1020,103 @@ class TestPdfThatCannotBeRead:
         result = _call(read_pdf_text, path=scanned_pdf)
         assert "error" not in result
         assert result["text"] == ""
+        assert result["pages_without_text"] == [1]
         assert "nothing here to quote" in result["note"]
+
+    def test_a_statement_behind_a_cover_page_keeps_the_read_route(self):
+        """The regression this replaced. Judging the whole document by page 1
+        called a readable statement "a scan or a photo" and withheld the one
+        route that answers the question -- while `read_pdf_text` on the same
+        file returned the totals. Banks and brokerages lead with a marketing
+        insert or a scanned letterhead routinely.
+        """
+        from financial_planner.tools.documents import PDF_READ_ROUTE, read_pdf_text
+
+        ensure_directories()
+        path = WORKSPACE_DIR / "_pytest-cover.pdf"
+        _write_multipage_pdf(path, [None, "Total monthly spending 412.00", "Net 88.00"])
+        try:
+            result = _call(inspect_document, path="/workspace/_pytest-cover.pdf")
+            assert PDF_READ_ROUTE in result["aggregation"]
+            assert "scan or a photo" not in result["aggregation"]
+            assert result["text_first_seen_on_page"] == 2
+            # The claim the note used to contradict.
+            assert "412.00" in _call(read_pdf_text, path="/workspace/_pytest-cover.pdf")["text"]
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_a_long_image_section_is_not_called_a_scan(self):
+        """The bounded probe must not make an unbounded claim. Text first
+        appearing past the probe limit is a statement behind a long scanned
+        cover section, not a photograph of one, and the note has to say what
+        was actually looked at or it asserts something the later pages
+        disprove.
+        """
+        from financial_planner.tools.documents import MAX_PDF_PROBE_PAGES, read_pdf_text
+
+        ensure_directories()
+        path = WORKSPACE_DIR / "_pytest-longcover.pdf"
+        pages = [None] * (MAX_PDF_PROBE_PAGES + 1) + ["Total monthly spending 412.00"]
+        _write_multipage_pdf(path, pages)
+        try:
+            result = _call(inspect_document, path="/workspace/_pytest-longcover.pdf")
+            note = result["aggregation"]
+            assert result["text_first_seen_on_page"] is None
+            assert f"first {MAX_PDF_PROBE_PAGES} of {len(pages)} pages" in note
+            assert "nothing to quote" not in note
+            # The disproving call, named. A default read_pdf_text covers
+            # start_page + 4 -- the probe window exactly -- so "try a later
+            # range" would send the model back over the pages it just checked.
+            assert f"start_page={MAX_PDF_PROBE_PAGES + 1}" in note
+            text = _call(
+                read_pdf_text,
+                path="/workspace/_pytest-longcover.pdf",
+                start_page=MAX_PDF_PROBE_PAGES + 1,
+            )["text"]
+            assert "412.00" in text
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_unreadable_pages_are_named_rather_than_joined_away(self):
+        """`"\n\n".join` hid which pages contributed nothing, so a statement
+        whose transaction pages are images came back looking complete: one
+        letterhead cleared the emptiness check for the whole range.
+        """
+        from financial_planner.tools.documents import read_pdf_text
+
+        ensure_directories()
+        path = WORKSPACE_DIR / "_pytest-mixed.pdf"
+        _write_multipage_pdf(path, ["FIRST NATIONAL BANK", None, None])
+        try:
+            result = _call(read_pdf_text, path="/workspace/_pytest-mixed.pdf")
+            assert "error" not in result
+            assert result["pages_without_text"] == [2, 3]
+            assert "note" not in result
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_a_fully_rendered_statement_reports_no_missing_pages(self):
+        """The other half: naming unreadable pages must not cry wolf on a
+        statement that extracted cleanly.
+        """
+        from financial_planner.tools.documents import read_pdf_text
+
+        ensure_directories()
+        path = WORKSPACE_DIR / "_pytest-rendered.pdf"
+        _write_multipage_pdf(path, ["Total monthly spending 412.00", "Net 88.00"])
+        try:
+            assert (
+                _call(read_pdf_text, path="/workspace/_pytest-rendered.pdf")["pages_without_text"]
+                == []
+            )
+            assert (
+                _call(inspect_document, path="/workspace/_pytest-rendered.pdf")[
+                    "text_first_seen_on_page"
+                ]
+                == 1
+            )
+        finally:
+            path.unlink(missing_ok=True)
 
     def test_a_locked_pdf_names_its_own_type_and_a_route(self, locked_pdf):
         """`envelope.err` serializes the class name and the model keys recovery

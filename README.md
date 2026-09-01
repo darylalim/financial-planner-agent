@@ -231,14 +231,15 @@ numbers.
 
 Deliberate repetition is not the same as hand-copying, and the first version of
 this was both. Only the opening sentence differs between the two runtime
-statements; everything after it is `PDF_ROUTES_FORWARD`, composed by
-`_with_pdf_routes`, and a test pins that both messages *end* in it. Written out
-twice, they had already drifted inside one commit — the refusal forbade totalling
-the transaction lines by hand and the `aggregation` note did not, on the path the
-agent reaches first. That text also states what provenance alone left out: the
-totals a PDF prints are the document's claim, and nothing in it tells a tampered
-statement from a genuine one, so they are attributed to the statement rather than
-reported as the household's verified numbers. The skill is the one copy no
+statements; everything after it is composed by `_pdf_statement` from clauses
+they share, and a test pins that both messages *end* in the one clause every
+case keeps. Written out twice, they had already drifted inside one commit — the
+refusal forbade totalling the transaction lines by hand and the `aggregation`
+note did not, on the path the agent reaches first. That text also states what
+provenance alone left out: the totals a PDF prints are the document's claim, and
+nothing in it tells a tampered statement from a genuine one, so they are
+attributed to the statement rather than reported as the household's verified
+numbers. The skill is the one copy no
 constant can reach, so a test reads the file and fails when it drifts.
 
 **Not every PDF has both routes, which is why the text is clauses and not one
@@ -313,7 +314,7 @@ on unrelated quantities.
 ## Development
 
 ```bash
-uv run pytest          # 373 tests, no API key or network required
+uv run pytest          # 377 tests, no API key or network required
 uv run ruff check .
 uv run ruff format .
 ```

@@ -36,6 +36,14 @@ from financial_planner.envelope import err, ok
 MAX_PREVIEW_ROWS = 5
 MAX_PDF_CHARS = 20_000
 
+# How far past page 1 to look for text before calling a document unreadable.
+# Judging that from page 1 alone was wrong in both directions: a statement
+# behind a marketing insert or a scanned letterhead was called a photo and
+# denied a route that works, and a document whose only text is a letterhead was
+# called rendered. Bounded because this runs on every inspection, and a cover
+# section is a few pages, not fifty.
+MAX_PDF_PROBE_PAGES = 5
+
 # Accepted arguments. "split_columns" is deliberately absent: it is a result,
 # selected by passing inflow_column. Accepting it as an argument let it fall
 # through to the positive_outflow branch and report a label the skill is told to
@@ -197,9 +205,9 @@ def _load_table(path: Path) -> pd.DataFrame:
     a user hits, and the generic message names the formats it wants without
     saying what to do instead -- which left the model retrying different column
     names, failing identically, and answering without the numbers. Everything
-    after that refusal's first sentence comes from :func:`_with_pdf_routes`,
-    because ``inspect_document`` has to say the same thing and the two copies
-    had already drifted apart.
+    after that refusal's first sentence is composed by :func:`_pdf_statement`
+    from the shared clauses, because ``inspect_document`` has to say the same
+    thing and the two copies had already drifted apart.
     """
     suffix = path.suffix.lower()
     if suffix == ".csv":
@@ -387,21 +395,42 @@ def inspect_document(path: str) -> str:
 
     Returns:
         JSON describing the file: for tables, columns/dtypes/row_count/preview;
-        for PDFs, page count, the first page's text, and an `aggregation` note
-        saying a PDF cannot be summarized into a budget.
+        for PDFs, page count, the first page's text, `text_first_seen_on_page`
+        (the first page any text was extracted from, or null if none of the
+        first few pages had any -- pass it to read_pdf_text as start_page
+        rather than guessing), and an `aggregation` note saying a PDF cannot be
+        summarized into a budget.
     """
     try:
         resolved = _resolve_existing(path)
 
         if resolved.suffix.lower() == ".pdf":
             reader = _open_pdf(resolved)
-            first = (reader.pages[0].extract_text() or "") if reader.pages else ""
+            pages = reader.pages
+            first = (pages[0].extract_text() or "") if pages else ""
+            # Which page text first appears on, rather than whether page 1 has
+            # any. `first_page_excerpt` still means page 1 -- its name says so
+            # -- but the read route must not be withheld on the strength of a
+            # cover page, and the page number is what the model needs to ask
+            # read_pdf_text for a narrow range instead of guessing.
+            probed = min(len(pages), MAX_PDF_PROBE_PAGES)
+            text_page = next(
+                (
+                    n
+                    for n in range(1, probed + 1)
+                    # `first` is page 1 already extracted; extract_text parses
+                    # the content stream, so re-running it here doubled the
+                    # cost of inspecting every PDF.
+                    if (first if n == 1 else pages[n - 1].extract_text() or "").strip()
+                ),
+                None,
+            )
             # An image-only statement is the common case this distinguishes: a
             # scan or a phone photo extracts to nothing, so `read_pdf_text`
             # returns an empty string inside a *success* envelope and the agent
             # is left with no numbers and no sign that anything failed. The
             # excerpt is the signal, and it is already in hand.
-            if first.strip():
+            if text_page is not None:
                 aggregation = _pdf_statement(
                     "Not available for a PDF: summarize_spending will refuse this file.",
                     PDF_NO_COLUMNS,
@@ -409,20 +438,41 @@ def inspect_document(path: str) -> str:
                     PDF_EXPORT_ROUTE,
                 )
             else:
-                aggregation = _pdf_statement(
-                    "Not available for a PDF: summarize_spending will refuse this file, "
-                    "and no text came out of its first page -- a scan or a photo rather "
-                    "than a rendered statement, so read_pdf_text has nothing to quote "
-                    "either.",
-                    PDF_NO_COLUMNS,
-                    PDF_EXPORT_ROUTE,
-                )
+                # Say what was actually looked at. Concluding "this is a
+                # scan" from a bounded probe is the same collapse that judging
+                # from page 1 was, moved to page 5: a long scanned cover
+                # section on a rendered statement would earn a claim about the
+                # whole document that the later pages disprove.
+                if len(pages) > probed:
+                    # Name the page rather than saying "a later range". A
+                    # default read_pdf_text call covers start_page + 4, which is
+                    # this same window -- so a model checking the claim the
+                    # obvious way gets the probe's own result back and reads it
+                    # as confirmation. The one call that disproves it is the one
+                    # this has to spell out.
+                    lead = (
+                        "Not available for a PDF: summarize_spending will refuse this "
+                        f"file, and no text came out of its first {probed} of "
+                        f"{len(pages)} pages -- a scan, or a statement behind a long "
+                        f"image section. Try read_pdf_text with start_page={probed + 1} "
+                        "before giving up on the text; a default call would re-read the "
+                        "pages already known to be empty."
+                    )
+                else:
+                    lead = (
+                        "Not available for a PDF: summarize_spending will refuse this "
+                        f"file, and no text came out of any of its {len(pages)} page(s) "
+                        "-- a scan or a photo rather than a rendered statement, so "
+                        "read_pdf_text has nothing to quote either."
+                    )
+                aggregation = _pdf_statement(lead, PDF_NO_COLUMNS, PDF_EXPORT_ROUTE)
             return ok(
                 {
                     "path": path,
                     "type": "pdf",
                     "page_count": len(reader.pages),
                     "first_page_excerpt": first[:2_000],
+                    "text_first_seen_on_page": text_page,
                     "aggregation": aggregation,
                 }
             )
@@ -686,9 +736,12 @@ def read_pdf_text(path: str, start_page: int = 1, end_page: int | None = None) -
         end_page: Last page to extract, inclusive. Defaults to start_page + 4.
 
     Returns:
-        JSON with the extracted text, truncated at 20,000 characters, plus a
-        `note` when extraction produced nothing -- an image-only scan, where
-        an empty string would otherwise read as a blank page.
+        JSON with the extracted text, truncated at 20,000 characters;
+        `pages_without_text`, the page numbers in the requested range that
+        yielded nothing, which is how a part-scanned statement is told from a
+        complete one; and a `note` when the whole range produced nothing -- an
+        image-only scan, where an empty string would otherwise read as a blank
+        page.
     """
     try:
         resolved = _resolve_existing(path)
@@ -713,6 +766,13 @@ def read_pdf_text(path: str, start_page: int = 1, end_page: int | None = None) -
         chunks = [reader.pages[i - 1].extract_text() or "" for i in range(first, last + 1)]
         text = "\n\n".join(chunks)
         truncated = len(text) > MAX_PDF_CHARS
+        # `"\n\n".join` launders which pages were unreadable: one page with a
+        # letterhead on it clears the emptiness check for the whole range, so a
+        # statement whose transaction pages are images came back looking
+        # complete. Reporting the page numbers states what was found rather
+        # than guessing whether it was enough -- the model has the text and can
+        # judge, but only if it is told which pages contributed none of it.
+        empty_pages = [first + n for n, chunk in enumerate(chunks) if not chunk.strip()]
 
         payload = {
             "path": path,
@@ -720,6 +780,7 @@ def read_pdf_text(path: str, start_page: int = 1, end_page: int | None = None) -
             "page_count": total,
             "truncated": truncated,
             "text": text[:MAX_PDF_CHARS],
+            "pages_without_text": empty_pages,
         }
         # The backwards-range branch above already refuses to hand back an empty
         # success envelope, for the reason stated there. Extraction returning
