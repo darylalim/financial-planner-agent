@@ -6,6 +6,8 @@ traversal defence and the collision behaviour are security/data-loss relevant.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from financial_planner.uploads import destination_for, save_uploads
@@ -88,3 +90,26 @@ class TestSaveUploads:
         saved, skipped = save_uploads([FakeUpload(".."), FakeUpload("good.csv")], tmp_path)
         assert saved == ["good.csv"]
         assert skipped == [".."]
+
+    def test_a_write_that_fails_is_a_skip_rather_than_a_raise(self, tmp_path, monkeypatch):
+        """Regression: a failed write abandoned the batch and reached the UI raw.
+
+        The files already on disk went unnamed -- so the agent was never told
+        they existed -- and because this runs outside the turn's try/except, the
+        traceback rendered unredacted, absolute host paths and all.
+        """
+        real_write = Path.write_bytes
+
+        def _refuse_the_second(self, data):
+            if self.name == "february.csv":
+                raise PermissionError(str(self))
+            return real_write(self, data)
+
+        monkeypatch.setattr(Path, "write_bytes", _refuse_the_second)
+        saved, skipped = save_uploads(
+            [FakeUpload("january.csv"), FakeUpload("february.csv")], tmp_path
+        )
+
+        assert saved == ["january.csv"]
+        assert skipped == ["february.csv"]
+        assert (tmp_path / "january.csv").exists()

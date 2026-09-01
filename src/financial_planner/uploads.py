@@ -50,10 +50,17 @@ def destination_for(directory: Path, filename: str) -> Path | None:
 def save_uploads(files: list[Any], directory: Path) -> tuple[list[str], list[str]]:
     """Write uploaded files into ``directory``, reporting saves and skips.
 
-    A name with no usable final component cannot be written, and dropping it
-    quietly is data loss the user never hears about: they attached a file, the
-    agent is never told about it, and nothing on screen says why. So the skip is
-    returned rather than swallowed, leaving the caller free to say so.
+    A file fails to land two ways -- a name with no usable final component, or
+    a write that errors -- and dropping either quietly is data loss the user
+    never hears about: they attached a file, the agent is never told about it,
+    and nothing on screen says why. So the skip is returned rather than
+    swallowed, leaving the caller free to say so.
+
+    The write error is caught here rather than raised for the second half of
+    that same reason. A raise abandons the batch mid-loop, so the files already
+    on disk are never named to the caller and the agent is never told they
+    exist; in the Streamlit app it also escapes the turn's own try/except, which
+    is the only place an exception is redacted and escaped before it renders.
 
     Args:
         files: Objects exposing ``.name`` and ``.getvalue()`` (Streamlit's
@@ -73,6 +80,10 @@ def save_uploads(files: list[Any], directory: Path) -> tuple[list[str], list[str
         if destination is None:
             skipped.append(item.name)
             continue
-        destination.write_bytes(item.getvalue())
+        try:
+            destination.write_bytes(item.getvalue())
+        except OSError:
+            skipped.append(item.name)
+            continue
         saved.append(destination.name)
     return saved, skipped
