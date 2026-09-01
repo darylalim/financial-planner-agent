@@ -378,10 +378,11 @@ if user_text or uploaded_names:
                 reply["content"] = f"_This turn failed and was not answered: {safe_detail}_"
 
     if completed:
-        # Redraw once the turn is done. The sidebar's document list and the
-        # onboarding chips were both rendered from pre-turn state, so without
-        # this a statement uploaded this turn stays invisible in the sidebar
-        # even after the agent has read it. Safe from looping: on the redraw
-        # the chat input is empty and the transcript is non-empty, so nothing
-        # re-enters this block.
+        # Redraw once the turn is done. The sidebar's document list was
+        # rendered from pre-turn state, so without this a statement uploaded
+        # this turn stays invisible in the sidebar even after the agent has read
+        # it. The onboarding chips were the other half of this reason until the
+        # turn began unmounting them itself, above. Safe from looping: on the
+        # redraw the chat input is empty and the transcript is non-empty, so
+        # nothing re-enters this block.
         st.rerun()
