@@ -1,6 +1,6 @@
 [project]
 name = "financial-planner-agent"
-version = "0.1.0"
+version = "0.1.1"
 description = "Personal financial planning agent built on Deep Agents"
 readme = "README.md"
 license = "MIT"
