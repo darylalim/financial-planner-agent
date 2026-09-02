@@ -3,6 +3,7 @@ name = "financial-planner-agent"
 version = "0.1.0"
 description = "Personal financial planning agent built on Deep Agents"
 readme = "README.md"
+license = "MIT"
 requires-python = ">=3.11"
 dependencies = [
     # Agent harness — pulls langchain, langchain-core, langchain-anthropic,
@@ -30,7 +31,7 @@ dev = [
 ]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]  # 1.27 added PEP 639; older silently emits legacy License:
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]

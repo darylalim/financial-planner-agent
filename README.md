@@ -395,3 +395,7 @@ scenarios exits non-zero rather than reporting a clean pass over nothing.
 - US-centric: APR conventions, IRS limits, Social Security.
 - Single-user by design. `FilesystemBackend` is unsafe in a shared web server —
   for multi-user deployment, swap to a `StoreBackend` namespaced per user.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
