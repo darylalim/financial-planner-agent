@@ -63,9 +63,9 @@ jobs:
       # instead of on the next machine that clones the repo.
       - run: uv sync --locked
 
-      # The gate from `.claude/hooks/verify.sh`, in its order. Not the README's
-      # snippet, which lists the same tools in a different order and formats in
-      # place; `--check` is what makes formatting a verdict rather than an edit.
+      # The gate from `.claude/hooks/verify.sh`, in its order -- the same three
+      # the README's Development section gives. `--check` is what makes
+      # formatting a verdict rather than an edit; `ruff format .` applies it.
       - run: uv run ruff format --check .
       - run: uv run ruff check .
       - run: uv run pytest -q

@@ -13,10 +13,9 @@ uv sync                        # install
 uv run streamlit run app.py    # the app
 ```
 
-**The verification gate** is these three, in this order — what `.claude/hooks/verify.sh`
-and CI both run. `--check` is what makes formatting a verdict rather than an edit; the
-README's snippet lists the same tools in a different order and formats in place, and is
-deliberately *not* the gate:
+**The verification gate** is these three, in this order — what `.claude/hooks/verify.sh`,
+CI and the README all run. `--check` is what makes formatting a verdict rather than an
+edit; `ruff format .` applies it instead, and is the only form that is not the gate:
 
 ```bash
 uv run ruff format --check .
@@ -79,7 +78,8 @@ upload path and the API key's spend to every device on the network, unauthentica
 agent-side defences above do not reach it: they all assume the attacker arrived inside an
 uploaded document. Deleting the file breaks nothing and prints no warning; a Network URL
 simply reappears. `allowedHosts` is pinned beside `address` because an empty list accepts
-any `Host` header. The README's "single-user by design" is the prose, this is the latch.
+any `Host` header. README documents the file for the same reason; its "single-user by
+design" is the prose, this is the latch.
 
 **`CHECKPOINT_DB` has two branches and both are load-bearing.** Default home →
 `PROJECT_ROOT/planner_state.sqlite` (the historic name, so an existing install's saved
