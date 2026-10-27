@@ -19,7 +19,7 @@ needs to get going.
 
 | Phase | Goal | Depends on | Version | Live cost (model time) | Status |
 |---|---|---|---|---|---|
-| 0 | Upgrade dependencies; `agent_home/` allowlist; CI on 3.11 + 3.14 | — | 0.1.2 | ~5 min (actual ~7: one scenario rerun after a fix) | in progress (`plan/model-roles-and-ui`) |
+| 0 | Upgrade dependencies; `agent_home/` allowlist; CI on 3.11 + 3.14 | — | 0.1.2 | ~5 min (actual ~7: one scenario rerun after a fix) | PR #2 |
 | 1 | Opus 5.5, effort `high`, `drop_block`, finance-aware summarizer | 0 | 0.2.0 | ~40 min | not started |
 | 2 | Quarantined `document-reader`; close all four PDF paths | 1 | 0.3.0 | ~15 min | not started |
 | 3 | Matching light and dark theme | 0 | next minor | none | not started |
