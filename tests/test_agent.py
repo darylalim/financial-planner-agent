@@ -252,6 +252,35 @@ class TestMiddlewareSurvives:
         assert "TodoListMiddleware.after_model" in agent.nodes
 
 
+class TestRecursionLimitBudget:
+    """``recursion_limit`` counts graph steps, and every node is one.
+
+    deepagents 0.7.32 added ``SkillsMiddleware.before_model`` to the model/tools
+    loop. That raised a tool round from three steps to four, and with it the
+    agent ran out of steps a quarter sooner: the live retirement scenario
+    stopped with ``GraphRecursionError``, and nothing offline noticed. The limits
+    in ``app.py`` and ``scripts/live_check.py`` are sized for the nodes below; a
+    change here means re-sizing them, not just updating this list.
+    """
+
+    LOOP = {
+        "model",
+        "tools",
+        "TodoListMiddleware.after_model",
+        "SkillsMiddleware.before_model",
+    }
+
+    def test_the_nodes_a_tool_round_crosses_are_the_ones_the_limits_assume(
+        self, agent: Any
+    ) -> None:
+        per_round = {
+            node
+            for node in agent.nodes
+            if node in ("model", "tools") or node.endswith((".before_model", ".after_model"))
+        }
+        assert per_round == self.LOOP
+
+
 class TestCheckpointDatabaseLocation:
     """Where ``planner_state.sqlite`` lands is a boundary, not a preference.
 

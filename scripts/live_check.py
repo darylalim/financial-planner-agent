@@ -204,7 +204,10 @@ def run_scenario(name: str, turns: list[str]) -> bool:
     recorder = ToolRecorder()
     config = {
         "configurable": {"thread_id": f"live-{name}-{uuid.uuid4()}"},
-        "recursion_limit": 60,
+        # A graph step per node, and a tool round now crosses four (model,
+        # TodoListMiddleware.after_model, tools, SkillsMiddleware.before_model --
+        # the last added in deepagents 0.7.32), so this allows ~20 rounds.
+        "recursion_limit": 84,
         "callbacks": [recorder],
     }
 
