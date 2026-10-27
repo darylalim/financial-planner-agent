@@ -11,29 +11,34 @@ build/
 .env
 .streamlit/secrets.toml
 
-# The agent's working directory — user financial documents live here.
-# Never commit these.
+# The agent's filesystem root. Everything in it is ignored except what is
+# tracked on purpose: the skills, and the .gitkeep that holds workspace/ open.
 #
-# The path must be spelled in full: a pattern containing a slash is anchored to
+# This is an allowlist because the libraries decide where they write, and a
+# folder nobody listed must be ignored by default, never committed by default.
+# What lands here today, all of it household data:
+#   workspace/            the user's uploaded statements
+#   AGENTS.md             the household profile the agent maintains (income,
+#                         balances, goals, account details); recreated from a
+#                         template on first run
+#   conversation_history/ turns the Deep Agents summarizer removed from context
+#   large_tool_results/   tool results over the token limit, which
+#                         FilesystemMiddleware evicts instead of returning
+# The last two are written by different middleware for different reasons, and
+# both go through the on-disk backend, whose "/" virtual_mode re-roots here.
+#
+# Paths must be spelled in full: a pattern containing a slash is anchored to
 # the directory holding this .gitignore, so a bare "workspace/*" would only
 # match a top-level workspace/ and would silently fail to cover this one.
+#
+# Order matters: git cannot re-include a path whose parent is excluded, so the
+# first line excludes agent_home's contents (not agent_home/ itself), and
+# workspace/ is re-included before its own contents are excluded again.
+agent_home/*
+!agent_home/skills/
+!agent_home/workspace/
 agent_home/workspace/*
 !agent_home/workspace/.gitkeep
-
-# The household profile the agent maintains. It accumulates income, balances,
-# goals and account details, so it is personal data despite living beside the
-# committed skills. Recreated from a template on first run.
-agent_home/AGENTS.md
-
-# Written by the Deep Agents summarization middleware, which is part of the
-# default stack and offloads through this project's on-disk backend. With
-# FilesystemBackend the artifacts root is "/", which virtual_mode re-roots at
-# agent_home/ -- so evicted turns and oversized tool results land here as
-# markdown. That is the same statement data as workspace/, one directory up
-# from where the existing rules stop, and it appears only once a conversation
-# runs long enough to summarize.
-agent_home/conversation_history/
-agent_home/large_tool_results/
 
 # Persisted cross-session memory (SQLite store/checkpointer)
 *.sqlite
