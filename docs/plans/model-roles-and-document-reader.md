@@ -17,16 +17,22 @@ needs to get going.
 
 ### Status
 
-| Phase | Goal | Depends on | Version | Status |
-|---|---|---|---|---|
-| 0 | Upgrade dependencies; `agent_home/` allowlist; CI on 3.11 + 3.14 | — | 0.1.2 | not started |
-| 1 | Opus 5.5, effort `high`, `drop_block`, finance-aware summarizer | 0 | 0.2.0 | not started |
-| 2 | Quarantined `document-reader`; close all four PDF paths | 1 | 0.3.0 | not started |
-| 3 | Matching light and dark theme | 0 | next minor | not started |
-| 4 | Layout that adapts from a zoomed window to a wide monitor | 0 | next minor | not started |
+| Phase | Goal | Depends on | Version | Live cost (model time) | Status |
+|---|---|---|---|---|---|
+| 0 | Upgrade dependencies; `agent_home/` allowlist; CI on 3.11 + 3.14 | — | 0.1.2 | ~5 min | not started |
+| 1 | Opus 5.5, effort `high`, `drop_block`, finance-aware summarizer | 0 | 0.2.0 | ~40 min | not started |
+| 2 | Quarantined `document-reader`; close all four PDF paths | 1 | 0.3.0 | ~15 min | not started |
+| 3 | Matching light and dark theme | 0 | next minor | none | not started |
+| 4 | Layout that adapts from a zoomed window to a wide monitor | 0 | next minor | none | not started |
 
 Status values: `not started` / `in progress (<branch>)` / `PR #<n>` / `merged`. Phases 3
 and 4 may share one PR and one version bump.
+
+**Live cost** is a rough estimate of model time for all of a phase's paid runs, made
+before token counts were known. Ask the owner **once, at the start of the phase**, with
+this figure and the list of runs, rather than once per run. If the real cost is heading
+well past the estimate, stop and say so. Phase 0's run and Phase 1's comparison produce
+real token counts; update the later rows with them.
 
 ### What to read
 
@@ -49,8 +55,34 @@ repo's hooks" and "Working with CI". Then **only your phase's section.**
 ### Done when (every phase)
 
 Gate green on 3.11 and 3.14 · the phase's live or manual check done (with the owner's
-go-ahead) · docs updated · version bumped as the PR's last commit · this status table
-updated in the same PR.
+go-ahead) · **a conversation saved before this phase resumes and gets an answer** ·
+docs updated · version bumped as the PR's last commit · this status table updated in
+the same PR.
+
+**How to check that old conversations resume.** Every test in this plan builds fresh
+conversations, but the owner's saved ones were written by an older model, older tools
+and an older library. Phases 0–2 each change one of those.
+- **Before changing anything,** run a short two-turn conversation (e.g. the `budget`
+  scenario) on the phase's starting code, with `FINANCIAL_PLANNER_HOME` pointed at a
+  throwaway home and `build_checkpointer()`, so the thread persists to that home's
+  `-state.sqlite`. Use the same nesting rule as `live_check.py:43-45`, and keep the
+  directory until the end of the phase.
+- **After the phase's changes,** resume that thread id with a third question. It passes
+  if the turn completes with an answer, no API error, and no tool error.
+- Then ask the owner to resume one of their **real** conversations in the app. Claude
+  never opens the real checkpoint DB itself; the guard blocks it, and it holds household
+  data.
+- What each phase changes for old conversations:
+  - **0:** library versions and the checkpoint format (`langgraph-checkpoint` 4.2 → 4.3).
+  - **1:** the model. Old threads carry Opus 5 thinking blocks, which Opus 5.5 can't
+    read. The API is expected to drop them silently. Confirm that, and that
+    `drop_block` doesn't turn it into an error.
+  - **2:** the main agent's tool set. Old threads contain the main agent calling
+    `read_pdf_text`, which it no longer has, and the `tools` array changes. Check whether
+    the API and deepagents accept tool calls in history for a tool that is no longer
+    bound. If they don't, that is a blocker to raise with the owner before merging, not
+    something to patch quietly.
+  - **3–4:** UI only. The owner resuming a real conversation in the app is enough.
 
 ## The phases
 
@@ -628,7 +660,16 @@ rare events. Confirm the exact field shape in the claude-api skill's
      daily use. This spends money; ask first, and run it alongside the other live work.
 
 6. **Docs:**
-   - README model section and `.env.example`.
+   - README model section and `.env.example`. **Say how to go back:** setting
+     `FINANCIAL_PLANNER_MODEL=anthropic:claude-opus-5` in `.env` returns to the previous
+     model while keeping the rest of Phase 1 (the finance summary prompt, `drop_block`).
+     Effort `high` is Opus 5's default anyway. **But `thinking.block_binding` may not
+     be accepted by Opus 5:** the claude-api skill lists the history check for Fable 5.1
+     and the 5.5-generation models, not Opus 5. If Opus 5 rejects it, step 2 must send
+     `block_binding` (and its beta) only to models that run the check, keyed on the model
+     id in one small table in `config.py`. Otherwise the way back, and step 5's Opus 5
+     comparison runs, would fail on the first request. Step 5's runs are where this
+     shows up, so check the first Opus 5 request before starting the batch.
    - `CLAUDE.md` gains one line under Architecture: the summarizer is replaced by name to
      carry the finance prompt, and that replacement fails open.
    - **README security section: say the checkpoint database is unencrypted.**
