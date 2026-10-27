@@ -1,9 +1,61 @@
-# Plan: per-role models, then a quarantined document reader
+# Plan: upgrade, per-role models, a quarantined document reader, and an adaptive UI
 
-Drafted 2026-10-26 for implementation in a later session. Read `CLAUDE.md` first —
+Drafted 2026-10-26 for implementation in later sessions. Read `CLAUDE.md` first —
 several steps below touch invariants it lists as breaking silently.
 
-Three phases, shipped separately and in order:
+## Start here
+
+This plan is implemented across several sessions, one phase per session and one PR per
+phase. Each new session starts without the planning context, so this block is all it
+needs to get going.
+
+**Kickoff message** (paste into each new session):
+> Read `CLAUDE.md`, then the "Start here" section of
+> `docs/plans/model-roles-and-document-reader.md`. Implement the next phase whose status
+> is not `merged` — only that phase. Ask before any live check or public change. Update
+> the status table before you finish.
+
+### Status
+
+| Phase | Goal | Depends on | Version | Status |
+|---|---|---|---|---|
+| 0 | Upgrade dependencies; `agent_home/` allowlist; CI on 3.11 + 3.14 | — | 0.1.2 | not started |
+| 1 | Opus 5.5, effort `high`, `drop_block`, finance-aware summarizer | 0 | 0.2.0 | not started |
+| 2 | Quarantined `document-reader`; close all four PDF paths | 1 | 0.3.0 | not started |
+| 3 | Matching light and dark theme | 0 | next minor | not started |
+| 4 | Layout that adapts from a zoomed window to a wide monitor | 0 | next minor | not started |
+
+Status values: `not started` / `in progress (<branch>)` / `PR #<n>` / `merged`. Phases 3
+and 4 may share one PR and one version bump.
+
+### What to read
+
+Everyone reads: this block, "Where things stand", "Decisions", "Working under this
+repo's hooks" and "Working with CI". Then **only your phase's section.**
+
+### Standing rules
+
+- One phase per session and per PR. Don't start the next phase in the same session.
+- **Ask the owner first** before any live check (`live_check.py` and the one-off scripts
+  spend real money) and before any public change (`gh repo edit`, pushing to `main`).
+- Never edit `.claude/settings.json` or `.claude/hooks/*`; ask the owner.
+- The gate is the keys-hidden form in "Working with CI", not the Stop hook's plain run.
+- Facts in this plan were verified on 2026-10-26. Phase 0 re-verifies them; later
+  phases re-check any fact they build on.
+- **Branches:** Phase 0 continues on `plan/model-roles-and-ui` (its first commit is
+  this plan), so the plan reaches `main` with Phase 0. Later phases branch from `main`
+  after the previous phase merges.
+
+### Done when (every phase)
+
+Gate green on 3.11 and 3.14 · the phase's live or manual check done (with the owner's
+go-ahead) · docs updated · version bumped as the PR's last commit · this status table
+updated in the same PR.
+
+## The phases
+
+Five phases, each shipped as its own PR. The order is set by the dependencies in the
+status table:
 
 - **Phase 0** upgrades dependencies to their latest versions.
 - **Phase 1** changes the model and how it summarizes.
@@ -109,10 +161,11 @@ cap others.
 
 ### Steps
 
-1. **Branch first.** `main` publishes a release when its version has no tag yet.
+1. **Work on `plan/model-roles-and-ui`, not `main`** (see "Start here" → Branches).
+   `main` publishes a release whenever its version has no tag yet.
 
    **Then, before upgrading anything, make `agent_home/` ignore everything except what's
-   tracked** (its own commit, the first on the branch). Today `.gitignore` lists four
+   tracked** (its own commit, the first after the plan's own commit). Today `.gitignore` lists four
    runtime paths under `agent_home/` (`workspace/*`, `AGENTS.md`,
    `conversation_history/`, `large_tool_results/`). That only works while every folder
    the libraries write to is known. The upgrade spans 23 deepagents releases, and this
@@ -1053,3 +1106,13 @@ here means:
 
 **Gate** (keys hidden), then the manual check in step 6. Bump the version to the next
 minor as the PR's last commit, or once for both phases if Phases 3 and 4 share a PR.
+
+---
+
+## When the plan is finished
+
+Once Phase 4 (or the last remaining phase) merges, delete this file in its own small
+PR. It restates facts from the code, which `CLAUDE.md` warns will drift, and git history
+keeps it. Before deleting, make sure anything still true and still useful has moved to
+its proper home: README for users, `CLAUDE.md` for invariants. Also ask the owner to
+remove the `active-plan` memory, or delete it if the session has memory access.
