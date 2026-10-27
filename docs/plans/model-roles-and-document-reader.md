@@ -69,9 +69,17 @@ and an older library. Phases 0–2 each change one of those.
   directory until the end of the phase.
 - **After the phase's changes,** resume that thread id with a third question. It passes
   if the turn completes with an answer, no API error, and no tool error.
-- Then ask the owner to resume one of their **real** conversations in the app. Claude
-  never opens the real checkpoint DB itself; the guard blocks it, and it holds household
-  data.
+- Then have the owner check their **real** conversations. Claude never opens the real
+  checkpoint DB itself; it holds household data. **The app cannot reopen an old
+  conversation:** the thread id lives in `st.session_state` (`app.py:128-129`) and the
+  sidebar offers only "New conversation". So the owner check is a script the owner runs
+  in their own terminal. It loads every thread read-only with the new libraries (free),
+  then optionally continues one for a single paid turn. Phase 0 wrote one ad hoc and
+  found **0 threads**: `planner_state.sqlite` holds only the empty schema (20 KB), so no
+  real conversation existed to break. Later phases should first check whether that is
+  still true. If it is, the throwaway-home resume above is the whole check. If not, add
+  the script under `scripts/`, and make it say "nothing to check" rather than print a
+  zero tally that reads as a pass.
 - What each phase changes for old conversations:
   - **0:** library versions and the checkpoint format (`langgraph-checkpoint` 4.2 → 4.3).
   - **1:** the model. Old threads carry Opus 5 thinking blocks, which Opus 5.5 can't
