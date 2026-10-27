@@ -292,7 +292,12 @@ if user_text or uploaded_names:
             agent = load_agent(DEFAULT_MODEL)
             config = {
                 "configurable": {"thread_id": st.session_state.thread_id},
-                "recursion_limit": 100,
+                # Counts graph steps, not tool calls: a tool round crosses four
+                # nodes (model, TodoListMiddleware.after_model, tools,
+                # SkillsMiddleware.before_model -- the last added in deepagents
+                # 0.7.32), plus a few once per turn. This keeps the ~33 rounds
+                # that 100 allowed before that node existed.
+                "recursion_limit": 136,
             }
             events = stream_agent_events(agent, [{"role": "user", "content": user_text}], config)
 
