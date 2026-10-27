@@ -8,7 +8,7 @@ requires-python = ">=3.11"
 dependencies = [
     # Agent harness — pulls langchain, langchain-core, langchain-anthropic,
     # langgraph and langsmith transitively.
-    "deepagents>=0.7.3",
+    "deepagents>=0.7.32",
     # Chat UI
     "streamlit>=1.57",
     # Market data (no API key required)
