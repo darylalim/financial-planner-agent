@@ -21,6 +21,7 @@ workspace are never touched.
 from __future__ import annotations
 
 import atexit
+import json
 import os
 import re
 import shutil
@@ -28,7 +29,9 @@ import sys
 import tempfile
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -56,6 +59,8 @@ atexit.register(shutil.rmtree, _LIVE_ROOT, ignore_errors=True)
 
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
+from answer_checks import missing_tools, unsourced_figures  # noqa: E402
+from langchain_core.callbacks import BaseCallbackHandler  # noqa: E402
 from langgraph.checkpoint.memory import InMemorySaver  # noqa: E402
 
 from financial_planner.agent import build_agent  # noqa: E402
@@ -130,6 +135,53 @@ SCENARIOS: dict[str, list[str]] = {
 }
 
 
+@dataclass
+class ToolCall:
+    name: str
+    agent: str
+    output: str
+
+
+def _output_text(output: Any) -> str:
+    """A tool's output as text. Built-ins return a ToolMessage; ``task`` and
+    ``write_todos`` return a Command whose update carries the ToolMessage."""
+    update = getattr(output, "update", None)
+    if isinstance(update, dict):
+        return "\n".join(_output_text(m) for m in update.get("messages") or [])
+    content = getattr(output, "content", output)
+    return content if isinstance(content, str) else json.dumps(content, default=str)
+
+
+class ToolRecorder(BaseCallbackHandler):
+    """Records every tool call in every agent, with its output.
+
+    ``stream_agent_events`` cannot supply this. Its ToolEnd carries only a name
+    and a verdict, and it streams without ``subgraphs=True``, so a tool the
+    ``task`` subagent runs never reaches it. Callbacks propagate into
+    subgraphs, which is why the harness collects here instead of widening
+    ``streaming.py``.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[ToolCall] = []
+        self._started: dict[Any, tuple[str, str]] = {}
+
+    def on_tool_start(self, serialized, input_str, *, run_id, metadata=None, **kwargs):  # noqa: ARG002
+        metadata = metadata or {}
+        # A subagent's tools run one graph deeper, so their namespace nests.
+        namespace = metadata.get("checkpoint_ns") or ""
+        agent = metadata.get("lc_agent_name") or ("subagent" if "|" in namespace else "main")
+        self._started[run_id] = ((serialized or {}).get("name") or "tool", agent)
+
+    def on_tool_end(self, output, *, run_id, **kwargs):  # noqa: ARG002
+        name, agent = self._started.pop(run_id, ("tool", "?"))
+        self.calls.append(ToolCall(name, agent, _output_text(output)))
+
+    def on_tool_error(self, error, *, run_id, **kwargs):  # noqa: ARG002
+        name, agent = self._started.pop(run_id, ("tool", "?"))
+        self.calls.append(ToolCall(name, agent, str(error)))
+
+
 def check_answer(answer: str, tools: list[str]) -> list[str]:
     """Return a problem description for each defect found in a rendered answer."""
     problems = [
@@ -149,18 +201,22 @@ def check_answer(answer: str, tools: list[str]) -> list[str]:
 def run_scenario(name: str, turns: list[str]) -> bool:
     print(f"\n{'=' * 78}\nSCENARIO: {name}\n{'=' * 78}")
     agent = build_agent(checkpointer=InMemorySaver())
+    recorder = ToolRecorder()
     config = {
         "configurable": {"thread_id": f"live-{name}-{uuid.uuid4()}"},
         "recursion_limit": 60,
+        "callbacks": [recorder],
     }
 
     ok = True
+    ran_anywhere: set[str] = set()
     for i, prompt in enumerate(turns, 1):
         print(f"\n--- turn {i} ---\n> {prompt}\n")
         started = time.time()
         parts: list[str] = []
         tools: list[str] = []
         failed_tools: list[str] = []
+        recorder.calls.clear()
 
         for event in stream_agent_events(agent, [{"role": "user", "content": prompt}], config):
             if isinstance(event, Token):
@@ -178,8 +234,18 @@ def run_scenario(name: str, turns: list[str]) -> bool:
         if fatal:
             problems.append(f"tools returned errors: {fatal}")
 
+        ran_anywhere.update(call.name for call in recorder.calls)
+        delegated = [f"{c.name} ({c.agent})" for c in recorder.calls if c.agent != "main"]
+        # Reported, not failed: the Phase 0 run calibrates the false-positive
+        # rate (a figure fairly restated from an earlier turn is flagged), and
+        # whether this becomes a failure is decided once that rate is known.
+        unsourced = unsourced_figures(answer, [c.output for c in recorder.calls], prompt)
+
         print(f"\n  tools: {tools}")
+        if delegated:
+            print(f"  delegated: {delegated}")
         print(f"  elapsed: {time.time() - started:.1f}s   answer chars: {len(answer)}")
+        print(f"  unsourced figures: {len(unsourced)} {unsourced if unsourced else ''}")
         for name in recovered:
             print(f"  ~~ {name} returned an error the agent could recover from")
         for problem in problems:
@@ -189,6 +255,10 @@ def run_scenario(name: str, turns: list[str]) -> bool:
         ok = ok and not problems
         print(f"\n--- answer ---\n{answer}\n")
 
+    missing = missing_tools(name, ran_anywhere)
+    if missing:
+        print(f"  !! expected tools never ran, in any agent: {missing}")
+        ok = False
     return ok
 
 
