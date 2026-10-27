@@ -42,9 +42,10 @@ uv run python scripts/live_check.py budget     # one
 ```
 
 CI (`.github/workflows/ci.yml`) runs `uv sync --locked` plus the gate on Python 3.11 —
-the `requires-python` floor, not the 3.14 a local `.venv` is likely to be. **Nothing
-automated runs on 3.14.** A push to `main` whose `pyproject.toml` version has no tag yet
-publishes a GitHub Release.
+the `requires-python` floor — and on 3.14, what a local `.venv` is likely to be. A local
+3.11 run must use `uv run --isolated --python 3.11`; without `--isolated` it rebuilds
+the project `.venv` on 3.11 under the hooks. A push to `main` whose `pyproject.toml`
+version has no tag yet publishes a GitHub Release.
 
 ## Architecture
 

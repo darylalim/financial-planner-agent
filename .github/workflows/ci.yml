@@ -1,12 +1,11 @@
 # The same three checks as `.claude/hooks/verify.sh`, run on a fresh clone.
 #
-# It pins 3.11 -- the floor `requires-python = ">=3.11"` declares -- rather than
-# the 3.14 a local `.venv` is likely to be, because the floor is the claim
-# nothing else tests. Be clear about what that leaves open: no automated check
-# runs on 3.14, and the local hook is not a substitute for one, since it skips
+# It runs on two Pythons. 3.11 is the floor `requires-python = ">=3.11"`
+# declares, and nothing else tests that claim. 3.14 is what a local `.venv` is
+# likely to be, and the local hook is no substitute for testing it: it skips
 # entirely when there is no `.venv`, arms only when Edit/Write touched a .py,
-# and runs only inside a Claude Code session on one machine. Adding "3.14" to a
-# `strategy.matrix` below is what would close that gap.
+# and runs only inside a Claude Code session on one machine. `release` needs
+# every matrix run, so a red 3.14 blocks a release as surely as a red 3.11.
 #
 # The suite needs no API key and no network, so this workflow needs no secrets
 # and is safe on pull requests from forks. `scripts/live_check.py` is
@@ -34,8 +33,12 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    # The suite runs in ~30s cold. Ten minutes is slack for a slow download, not
-    # a budget; without it a hung step burns the 360-minute default.
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.14"]
+    # Per matrix run. The suite runs in ~30s cold. Ten minutes is slack for a
+    # slow download, not a budget; without it a hung step burns the 360-minute
+    # default.
     timeout-minutes: 10
     env:
       # `uv run` re-locks on its own, so the assertion `uv sync --locked` makes
@@ -49,9 +52,9 @@ jobs:
       # not resolve and fails the run before a single step executes. Bump this
       # deliberately; check `git ls-remote --tags` for what actually exists
       # rather than assuming the major tag is there.
-      - uses: astral-sh/setup-uv@v10.0.1
+      - uses: astral-sh/setup-uv@v10.3.2
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
           # `enable-cache` already defaults to `auto`, which is on for push and
           # pull_request, so setting it buys nothing. `cache-python` is the one
           # that defaults to false -- without it the managed CPython above is

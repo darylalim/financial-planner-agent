@@ -386,11 +386,10 @@ is driven by synthetic event streams captured from a live graph, and the Streaml
 app is exercised via `AppTest`.
 
 CI runs the gate plus `uv sync --locked` on every push to `main` and every pull
-request. It pins Python 3.11, the floor `requires-python` declares, rather than
-the 3.14 a local `.venv` is likely to be, because that floor and a lockfile that
-has drifted from `pyproject.toml` are the two claims nothing else tests. The gap
-that leaves: **nothing automated runs on 3.14**, and adding it to a
-`strategy.matrix` is what would close it. The suite needs no secrets, so the
+request, on two Pythons: 3.11, the floor `requires-python` declares, and 3.14,
+what a local `.venv` is likely to be. The floor and a lockfile that has drifted
+from `pyproject.toml` are the two claims nothing else tests, and 3.14 is what
+the code actually runs on day to day. The suite needs no secrets, so the
 workflow is safe on pull requests from forks. The live check is not part of it.
 
 The local gate is `.claude/hooks/`, which runs ruff on write and the full gate
