@@ -167,10 +167,10 @@ class ToolRecorder(BaseCallbackHandler):
         self._started: dict[Any, tuple[str, str]] = {}
 
     def on_tool_start(self, serialized, input_str, *, run_id, metadata=None, **kwargs):  # noqa: ARG002
-        metadata = metadata or {}
-        # A subagent's tools run one graph deeper, so their namespace nests.
-        namespace = metadata.get("checkpoint_ns") or ""
-        agent = metadata.get("lc_agent_name") or ("subagent" if "|" in namespace else "main")
+        # langchain stamps each agent's own name here: the main graph's
+        # ("financial-planner") for its tools, the subagent's ("general-purpose")
+        # for a delegated call.
+        agent = (metadata or {}).get("lc_agent_name") or "?"
         self._started[run_id] = ((serialized or {}).get("name") or "tool", agent)
 
     def on_tool_end(self, output, *, run_id, **kwargs):  # noqa: ARG002
@@ -238,7 +238,7 @@ def run_scenario(name: str, turns: list[str]) -> bool:
             problems.append(f"tools returned errors: {fatal}")
 
         ran_anywhere.update(call.name for call in recorder.calls)
-        delegated = [f"{c.name} ({c.agent})" for c in recorder.calls if c.agent != "main"]
+        delegated = [f"{c.name} ({c.agent})" for c in recorder.calls if c.agent != agent.name]
         # Reported, not failed: the Phase 0 run calibrates the false-positive
         # rate (a figure fairly restated from an earlier turn is flagged), and
         # whether this becomes a failure is decided once that rate is known.
