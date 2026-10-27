@@ -397,6 +397,59 @@ class TestAgainstRealAgent:
         assert _text(events) == "Projection ready."
 
 
+class TestARewrittenHistoryIsNotReplayed:
+    """The turn after an interrupted one streamed the earlier turns again.
+
+    A Stop during a tool call leaves an AI tool call with no result. On the next
+    turn deepagents' PatchToolCallsMiddleware repairs it by rewriting the whole
+    history -- ``RemoveMessage(REMOVE_ALL_MESSAGES)`` followed by every message
+    -- and both stream modes relay that rewrite. The previous answer was painted
+    into the new reply and every earlier tool call was re-announced. From
+    deepagents 0.7.32 the filled-in result also carries ``status="error"``, so
+    the interrupted call was reported as a fresh tool failure. langchain's
+    agent factory rewrites history the same way to repair an invalid tool call.
+    """
+
+    def _resume_after_a_stop(self) -> list:
+        agent = create_deep_agent(
+            model=ToolBindableFake(messages=iter([AIMessage(content="Fresh answer.")])),
+            tools=[],
+            system_prompt="test harness",
+            checkpointer=InMemorySaver(),
+        )
+        config = {"configurable": {"thread_id": str(uuid.uuid4())}, "recursion_limit": 10}
+        agent.update_state(
+            config,
+            {
+                "messages": [
+                    HumanMessage(content="first question"),
+                    _tool_call("ls", {"path": "/"}, "done"),
+                    ToolMessage(content="[]", tool_call_id="done", name="ls"),
+                    AIMessage(content="Earlier answer."),
+                    HumanMessage(content="second question"),
+                    _tool_call("project_savings", {"years": 20}, "stopped"),
+                ]
+            },
+        )
+        return list(stream_agent_events(agent, [{"role": "user", "content": "third"}], config))
+
+    def test_the_previous_answer_is_not_streamed_again(self):
+        assert _text(self._resume_after_a_stop()) == "Fresh answer."
+
+    def test_earlier_tool_calls_are_not_reported_again(self):
+        """Covers the interrupted call too: its filled-in error result belongs
+        to the turn that was stopped, which already said so."""
+        tool_events = [e for e in self._resume_after_a_stop() if isinstance(e, ToolStart | ToolEnd)]
+        assert tool_events == []
+
+    def test_a_graph_without_state_streams_as_before(self):
+        """FakeGraph has no get_state, and an agent compiled without a
+        checkpointer raises on it; neither has history to replay."""
+        result = ToolMessage(content="{}", tool_call_id="call_1", name="project_savings")
+        script = [("updates", {"tools": {"messages": [result]}})]
+        assert [type(e).__name__ for e in _events(script)] == ["ToolEnd"]
+
+
 class TestToolEndIsDeduped:
     """The updates stream can resurface the same message. ToolStart already
     deduped by call id; ToolEnd did not, so one failure was reported twice.

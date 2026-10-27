@@ -127,7 +127,11 @@ made a failed `write_file` render as a success.
 the paragraph boundary between the agent's preamble and its answer — but read that `id`
 only off chunks that carry text, since Anthropic sends a content-free chunk bearing the
 new id first. Synthetic streams that jump text→text pass while the real provider fails;
-the tests now replay the real interleaving.
+the tests now replay the real interleaving. Middleware that repairs history (after a
+Stop mid-tool-call, or an invalid tool call) rewrites *all* of it, and both stream modes
+relay the rewrite as new; `_history_before_turn` seeds the turn with the thread's ids and
+tool calls so the previous answer is not painted into the new one. A synthetic stream
+cannot show this — `TestARewrittenHistoryIsNotReplayed` drives a real compiled graph.
 
 **The assistant's transcript entry is reserved before the turn runs, never appended
 after.** `app.py` puts a placeholder dict into `st.session_state.messages` ahead of the

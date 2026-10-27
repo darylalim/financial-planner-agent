@@ -106,7 +106,9 @@ def stream_agent_events(
     Yields:
         :class:`Token`, :class:`ToolStart` and :class:`ToolEnd` events.
     """
-    seen_tool_calls: set[str] = set()
+    # Seeded with the thread's existing history so a rewrite of it is not
+    # mistaken for new activity -- see _history_before_turn.
+    prior_ids, seen_tool_calls = _history_before_turn(agent, config)
     last_message_id: str | None = None
     last_fragment: str | None = None
 
@@ -127,6 +129,8 @@ def stream_agent_events(
                 continue
 
             message_id = getattr(message, "id", None)
+            if message_id in prior_ids:
+                continue
             fragments = _text_fragments(message)
             if fragments:
                 # One turn produces several assistant messages -- a preamble
@@ -156,7 +160,46 @@ def stream_agent_events(
                 if not isinstance(payload, dict):
                     continue
                 for message in payload.get("messages") or []:
+                    if getattr(message, "id", None) in prior_ids:
+                        continue
                     yield from _events_for_message(message, seen_tool_calls)
+
+
+def _history_before_turn(agent: Any, config: dict[str, Any]) -> tuple[set[str], set[str]]:
+    """Return the thread's message ids, and its tool calls as ``seen`` keys.
+
+    Middleware repairs a broken history by rewriting all of it:
+    ``RemoveMessage(REMOVE_ALL_MESSAGES)`` and then every message, which both
+    stream modes relay as though it were new. deepagents' PatchToolCallsMiddleware
+    does this on the turn after a Stop interrupted a tool call; langchain's agent
+    factory does it to answer an invalid tool call. Without this, the previous
+    answer was painted into the new reply and every earlier tool call was
+    re-announced.
+
+    Matching ids catches the replayed messages. The tool-call keys catch the one
+    message a repair adds: the result filled in for the interrupted call, which
+    deepagents marks ``status="error"`` from 0.7.32. It answers a call the
+    stopped turn made, and that turn already recorded the interruption, so it
+    is not this turn's failure.
+
+    A graph without ``get_state`` (the tests' replayed streams) or without a
+    checkpointer (``ValueError``) has no history to replay.
+    """
+    get_state = getattr(agent, "get_state", None)
+    if get_state is None:
+        return set(), set()
+    try:
+        history = get_state(config).values.get("messages") or []
+    except ValueError:
+        return set(), set()
+
+    ids = {message.id for message in history if getattr(message, "id", None)}
+    seen: set[str] = set()
+    for message in history:
+        for call in getattr(message, "tool_calls", None) or []:
+            if call_id := call.get("id"):
+                seen.update((call_id, f"end:{call_id}"))
+    return ids, seen
 
 
 def _text_fragments(message: Any) -> list[str]:
