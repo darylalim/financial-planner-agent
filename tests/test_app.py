@@ -532,3 +532,93 @@ class TestTheAgentIsToldWhatIsOnFile:
         assert user["content"] == "See attached"
         assert user["attachments"] == ["a`b.csv"]
         assert "Files on file" not in "".join(m.value for m in app.markdown)
+
+
+CONFIG_PATH = Path(__file__).resolve().parents[1] / ".streamlit" / "config.toml"
+
+# WCAG 2.x minimums: 4.5 for body-size text, 3.0 for non-text UI (focus rings, borders).
+_AA_TEXT = 4.5
+_AA_NON_TEXT = 3.0
+_STATUS_HUES = ("red", "orange", "yellow", "green", "blue")
+
+
+def _luminance(hex_colour: str) -> float:
+    channels = [int(hex_colour.lstrip("#")[i : i + 2], 16) / 255 for i in (0, 2, 4)]
+    r, g, b = (c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in channels)
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def _contrast(fg: str, bg: str) -> float:
+    lighter, darker = sorted((_luminance(fg), _luminance(bg)), reverse=True)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+@pytest.fixture(scope="module")
+def config() -> dict:
+    import tomllib
+
+    return tomllib.loads(CONFIG_PATH.read_text())
+
+
+class TestStreamlitConfig:
+    """`.streamlit/config.toml` is half of the security boundary and all of the theme.
+
+    Deleting or "tidying" the file breaks nothing visible -- the app still starts, on
+    every interface, with a Network URL -- so the server latch is pinned here. The
+    theme checks keep a colour tweak from quietly dropping a pair below WCAG AA.
+    """
+
+    def test_server_binds_loopback_only(self, config):
+        assert config["server"]["address"] == "127.0.0.1"
+
+    def test_allowed_hosts_is_pinned_not_empty(self, config):
+        # An empty list accepts any Host header (DNS rebinding onto loopback).
+        assert config["server"]["allowedHosts"] == ["localhost", "127.0.0.1"]
+
+    def test_both_modes_are_defined_so_the_viewer_can_switch(self, config):
+        assert {"light", "dark"} <= config["theme"].keys()
+
+    def test_no_web_fonts(self, config):
+        # A remote font URL tells its host every time the app is opened.
+        theme = config["theme"]
+        for key in ("font", "codeFont"):
+            assert "://" not in theme.get(key, "")
+        for face in theme.get("fontFaces", []):
+            assert "://" not in face.get("url", "")
+
+    @pytest.mark.parametrize("mode", ["light", "dark"])
+    def test_text_meets_aa(self, config, mode):
+        theme = config["theme"][mode]
+        sidebar = theme.get("sidebar", {})
+        surfaces = {
+            "main": theme["backgroundColor"],
+            "secondary": theme["secondaryBackgroundColor"],
+            "code": theme["codeBackgroundColor"],
+            **{f"sidebar {k}": v for k, v in sidebar.items() if k != "borderColor"},
+        }
+        pairs = {f"text on {name}": (theme["textColor"], bg) for name, bg in surfaces.items()}
+        pairs["caption on main"] = (theme["grayColor"], theme["backgroundColor"])
+        if "backgroundColor" in sidebar:
+            pairs["caption on sidebar"] = (theme["grayColor"], sidebar["backgroundColor"])
+        # Streamlit draws primary buttons with white text in both modes.
+        pairs["button text on primary"] = ("#FFFFFF", theme["primaryColor"])
+        pairs["link on main"] = (theme["linkColor"], theme["backgroundColor"])
+        for hue in _STATUS_HUES:
+            pairs[f"{hue} text on its tint"] = (
+                theme[f"{hue}TextColor"],
+                theme[f"{hue}BackgroundColor"],
+            )
+        for hue in (*_STATUS_HUES, "violet"):
+            pairs[f"{hue} on main"] = (theme[f"{hue}Color"], theme["backgroundColor"])
+
+        failing = {
+            name: round(_contrast(fg, bg), 2)
+            for name, (fg, bg) in pairs.items()
+            if _contrast(fg, bg) < _AA_TEXT
+        }
+        assert not failing
+
+    @pytest.mark.parametrize("mode", ["light", "dark"])
+    def test_primary_is_visible_as_a_focus_ring(self, config, mode):
+        theme = config["theme"][mode]
+        assert _contrast(theme["primaryColor"], theme["backgroundColor"]) >= _AA_NON_TEXT

@@ -22,3 +22,82 @@ address = "127.0.0.1"
 # An empty allowedHosts accepts any Host header, so a hostile page that resolves
 # its own name to 127.0.0.1 reaches a loopback-bound app as same-origin.
 allowedHosts = ["localhost", "127.0.0.1"]
+
+# Theme: one teal accent, mirrored between light and dark. Colours live per mode;
+# shape and type are shared. Both modes are defined so the viewer can switch in the
+# settings menu. No web fonts: the bundled sans and mono keep the page from calling
+# Google Fonts, which would leak each visit to a personal finance app. Every text
+# pair is held to WCAG AA by tests/test_app.py::TestStreamlitConfig, which computes
+# contrast from the colours below -- a change that drops one under 4.5:1 fails the gate.
+
+[theme]
+font = "sans-serif"
+codeFont = "monospace"
+baseRadius = "8px"
+showWidgetBorder = true
+showSidebarBorder = true
+linkUnderline = false
+
+[theme.light]
+primaryColor = "#0F766E"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F1F5F4"
+textColor = "#14201F"
+linkColor = "#0F766E"
+borderColor = "#D3DCDA"
+codeBackgroundColor = "#EDF2F1"
+grayColor = "#56645F"
+redColor = "#B42318"
+redBackgroundColor = "#FEF3F2"
+redTextColor = "#B42318"
+orangeColor = "#B54708"
+orangeBackgroundColor = "#FFF6ED"
+orangeTextColor = "#B54708"
+yellowColor = "#A15C07"
+yellowBackgroundColor = "#FEFBE8"
+yellowTextColor = "#A15C07"
+greenColor = "#067647"
+greenBackgroundColor = "#ECFDF3"
+greenTextColor = "#067647"
+blueColor = "#175CD3"
+blueBackgroundColor = "#EFF4FF"
+blueTextColor = "#175CD3"
+violetColor = "#6941C6"
+
+[theme.light.sidebar]
+backgroundColor = "#F6F8F7"
+secondaryBackgroundColor = "#E8EEEC"
+codeBackgroundColor = "#E8EEEC"
+borderColor = "#D3DCDA"
+
+[theme.dark]
+primaryColor = "#0E7C73"
+backgroundColor = "#0D1514"
+secondaryBackgroundColor = "#16201F"
+textColor = "#E2EBE9"
+linkColor = "#5EE0CF"
+borderColor = "#2A3735"
+codeBackgroundColor = "#182321"
+grayColor = "#93A29F"
+redColor = "#F97066"
+redBackgroundColor = "#3A1714"
+redTextColor = "#F97066"
+orangeColor = "#F79009"
+orangeBackgroundColor = "#35210B"
+orangeTextColor = "#F79009"
+yellowColor = "#EAAA08"
+yellowBackgroundColor = "#332A0A"
+yellowTextColor = "#EAAA08"
+greenColor = "#47CD89"
+greenBackgroundColor = "#0F2E1F"
+greenTextColor = "#47CD89"
+blueColor = "#84ADFF"
+blueBackgroundColor = "#14213D"
+blueTextColor = "#84ADFF"
+violetColor = "#BDB4FE"
+
+[theme.dark.sidebar]
+backgroundColor = "#0A1110"
+secondaryBackgroundColor = "#141D1C"
+codeBackgroundColor = "#141D1C"
+borderColor = "#2A3735"

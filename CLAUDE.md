@@ -77,10 +77,13 @@ that can go missing.** Streamlit's `server.address` defaults to `0.0.0.0`, and
 `uv run streamlit run app.py` serves the sidebar's statement filenames, the chat box, the
 upload path and the API key's spend to every device on the network, unauthenticated. The
 agent-side defences above do not reach it: they all assume the attacker arrived inside an
-uploaded document. Deleting the file breaks nothing and prints no warning; a Network URL
-simply reappears. `allowedHosts` is pinned beside `address` because an empty list accepts
-any `Host` header. README documents the file for the same reason; its "single-user by
-design" is the prose, this is the latch.
+uploaded document. Deleting the file breaks nothing at runtime and prints no warning; a
+Network URL simply reappears. `allowedHosts` is pinned beside `address` because an empty
+list accepts any `Host` header. README documents the file for the same reason; its
+"single-user by design" is the prose, this is the latch. The file now also carries the
+light/dark theme, so it gets edited for cosmetic reasons — append below `[server]`, never
+reorder it. `tests/test_app.py::TestStreamlitConfig` pins both server settings and, for
+the theme, both modes, no web fonts, and WCAG AA contrast computed from the file's colours.
 
 **`CHECKPOINT_DB` has two branches and both are load-bearing.** Default home →
 `PROJECT_ROOT/planner_state.sqlite` (the historic name, so an existing install's saved
