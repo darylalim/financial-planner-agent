@@ -491,8 +491,12 @@ own credit-card payments is arithmetic on unrelated quantities.
 ```bash
 uv run ruff format --check .
 uv run ruff check .
-uv run pytest -q              # 387 tests, offline, no API key
+uv run pytest -q              # offline, no API key
 ```
+
+If you have a `.env`, run the tests as
+`ANTHROPIC_API_KEY= TAVILY_API_KEY= LANGSMITH_TRACING=false uv run pytest -q`.
+Otherwise `load_dotenv()` gives them your real keys and tracing, which CI never has.
 
 Those three, in that order, are the gate: what `.github/workflows/ci.yml` runs and
 what the local hook runs before a session ends. `--check` is what makes formatting
