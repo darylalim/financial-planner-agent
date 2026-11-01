@@ -90,6 +90,14 @@ Opus 5, so a bare model swap would quietly make the planner think less. The
 `general-purpose` subagent and the summarizer run on the same model instance, so
 they get the same settings.
 
+The one exception is the **document-reader**, the subagent that reads PDF text
+(see [The document-reader quarantine](#the-document-reader-quarantine)). It runs
+on Claude Sonnet 5.5 (`config.READER_MODEL`) at that model's own default effort:
+the work is reading-heavy, and it still has to judge what to extract.
+`FINANCIAL_PLANNER_READER_MODEL` overrides it. A non-Anthropic
+`FINANCIAL_PLANNER_MODEL` is reused for the reader too, so switching providers
+never quietly keeps needing an Anthropic key.
+
 Two settings exist because long conversations get **summarized**. Deep Agents
 replaces old turns with a summary and keeps the newest ones verbatim:
 
@@ -230,6 +238,54 @@ prompt injection hidden in an uploaded PDF cannot reach `.env`, the source, or
 git history. The custom document tools enforce the same boundary independently,
 since they receive paths straight from model output.
 
+#### The document-reader quarantine
+
+That root still holds `/AGENTS.md`, the household memory every later session
+loads, and the main agent can write it. So the main agent never sees a PDF's
+text. Only the `document-reader` subagent does, and its whole tool set is
+`read_pdf_text`: nothing to write with, nothing to delegate onward. The main
+agent sends it a PDF with `task` and gets back JSON with the totals the statement
+prints, plus `suspicious_content` for any text that reads like an instruction.
+This is a tool-set boundary, like withholding `delete`. A prompt can be talked
+out of an instruction, but a tool that is not bound cannot be called.
+
+Every path from a PDF to the main agent is closed:
+
+| Path | Closed by |
+|---|---|
+| `read_pdf_text` | Bound to the reader alone, and kept out of `ALL_TOOLS`, which the writing `general-purpose` subagent inherits |
+| `inspect_document` | Reports a PDF's page count, lock and scan status and `text_first_seen_on_page`, never its text |
+| Built-in `read_file` (and `ls`, `glob`, `grep`) | A read-deny rule for every PDF on the main agent's filesystem, inherited by `general-purpose` |
+| A large reader result written to `/large_tool_results/` | The reader has no `FilesystemMiddleware`, so nothing evicts its results to disk |
+
+The library writes to the shared backend for an agent whatever tools that agent
+has: offloaded tool results and summarized history land in `agent_home/`, where
+any agent with `read_file` can open them. So the quarantine has to cover what the
+library writes, not just what the reader can call. That is why the reader has no
+filesystem middleware at all. A narrowed one is not possible, because deepagents
+requires `read_file` in any `FilesystemMiddleware`, and `read_file` on a PDF
+hands over the whole document. Since listings hide PDFs from the main agent, the
+app names the files on file in the user's message at the start of each
+conversation and on any upload.
+
+The reader's answer is still drawn from the document, so the main agent treats it
+as data. The quarantine limits what the text can make an agent do. It does not
+make the text trustworthy. `scripts/live_check.py` tests this against injected
+statements, one per attack goal (see [The live check](#the-live-check)).
+
+**Accepted residual risks**, recorded rather than left implied:
+
+- CSV and XLSX preview rows (`inspect_document`'s `preview`) and web search
+  snippets still reach the main agent. The quarantine closes the PDF channel only.
+- The reader's summarizer writes the turns it removes, raw PDF text included, to
+  `/conversation_history/`, and the main agent can `read_file` it. That happens
+  only if one reader task fills most of a 1M-token context, roughly 170 maximal
+  `read_pdf_text` calls. If it ever matters, give the reader's summarizer a
+  separate in-memory backend.
+- The PDF read-deny rule does not reach a PDF inside a dot-directory, because the
+  permission matcher's `**` skips them. Nothing puts one there: uploads land flat
+  in `/workspace/`.
+
 Two kinds of persistence:
 
 - **Files** on real disk, so the profile and generated plans survive restarts.
@@ -290,9 +346,9 @@ analysis goes wrong.
 | `loan_payment` | Mortgage/auto/student payment and lifetime interest |
 | `plan_debt_payoff` | Multi-debt simulation, avalanche or snowball |
 | `test_withdrawal_plan` | Retirement drawdown sustainability |
-| `inspect_document` | Schema and preview of a CSV/XLSX/PDF |
+| `inspect_document` | Schema and preview of a CSV/XLSX; the structure, never the text, of a PDF |
 | `summarize_spending` | Aggregate a CSV/XLSX export by category and month, with savings rate and monthly averages |
-| `read_pdf_text` | Extract a page range from a PDF |
+| `read_pdf_text` | Extract a page range from a PDF. **Document-reader only**: the main agent cannot call it |
 | `get_quote` | Current prices for one or more symbols |
 | `get_fund_profile` | Expense ratio and category |
 | `get_historical_return` | Realized annualized return over the elapsed calendar span, and volatility scaled by the series' own bar rate |
@@ -323,11 +379,19 @@ override is matched by class name and would fail open on a rename. It pins the
 `agent_home`, so checking only the main graph would let it regain `delete` with
 every other assertion still passing.
 
+The filesystem tools also refuse every PDF. `read_file` on one would hand the
+model the whole document past every check the PDF tools make. The deny rule is
+spelled case-insensitively and for dotfiles too, because deepagents classifies
+`Statement.PDF` as a PDF but matches permissions case-sensitively, and its `*`
+skips a leading dot. Tests drive the bound tools on real PDFs rather than check
+the rule's argument, so a library change that stopped honouring it would fail.
+
 ### PDFs are readable, not aggregatable
 
-The upload box accepts PDFs, and `inspect_document` and `read_pdf_text` both read
-them. `summarize_spending` does not: a PDF has no columns, so there is nothing to
-group by category or by month.
+The upload box accepts PDFs, and the document-reader reads them (the main agent
+only inspects their structure; see
+[the quarantine](#the-document-reader-quarantine)). `summarize_spending` does
+not: a PDF has no columns, so there is nothing to group by category or by month.
 
 That gap is not going to be closed by parsing the PDF. Extracting a transaction
 table out of a rendered statement produces rows of unknown fidelity, and a budget
@@ -337,8 +401,8 @@ PDF statement almost always offers a CSV export beside it, and that export is
 authoritative in a way the rendering is not.
 
 So the refusal is the feature, and it carries the route forward. `_load_table`
-raises `NotTabular`, with a message naming both options: read the printed totals
-with `read_pdf_text`, or ask for a CSV/XLSX export. It is its own exception type
+raises `NotTabular`, with a message naming both options: have the document-reader
+read the printed totals, or ask for a CSV/XLSX export. It is its own exception type
 because `envelope.err` serializes the class name and the model picks its recovery
 off it. `inspect_document` says the same thing in its *success* payload under an
 `aggregation` key, since the skill tells the agent to call it before any other
@@ -372,7 +436,10 @@ survives every case.
 
 The read route carries the arithmetic and untrusted-data caveats *inside* it, so
 a site that offers the route cannot drop them: the caveat goes where its route
-goes. The untrusted-data half states what provenance alone left out. The totals a
+goes. It has two audiences now. The main agent's statements offer
+`PDF_DELEGATE_ROUTE` (send it to the reader), the reader's system prompt carries
+`PDF_READ_ROUTE` (read it with `read_pdf_text`), and both are built from one
+`PDF_TOTALS_CAVEATS` clause, so the warnings cannot drift apart. The untrusted-data half states what provenance alone left out. The totals a
 PDF prints are the document's claim, and nothing in it tells a tampered statement
 from a genuine one, so they are attributed to the statement rather than reported
 as the household's verified numbers.
@@ -447,7 +514,26 @@ above yourself otherwise.
 uv run python scripts/live_check.py           # every scenario, ~5 min
 uv run python scripts/live_check.py budget    # just one
 uv run python scripts/live_check.py --repeat 3 --model anthropic:claude-opus-5
+uv run python scripts/live_check.py --repeat 2 pdf-clean pdf-memory pdf-secrets \
+    pdf-write pdf-hidden                       # the quarantine, ~3 min
 ```
+
+The `pdf-*` scenarios test the
+[document-reader quarantine](#the-document-reader-quarantine). Each uploads one
+statement from `examples/statements/`, under an ordinary name, and asks for its
+totals. `scripts/statement_pdfs.py` generates the statements, and a test fails if
+the committed copies drift. Each one carries a single injected instruction with
+one goal: poison the household memory, read `.env`, write a file, and the memory
+goal again in white one-point text a person would not see. A clean statement is
+the control. The checks are deterministic, never a judgement of the answer's tone:
+a hash of `/AGENTS.md` and the workspace before and after, any write tool run by
+any agent, the main agent pointing `read_file` or `grep` at a PDF, and the
+reader's JSON failing to flag the instruction. A payload repeated in the answer is
+printed for a person to judge, since "the statement tells me to record a
+$1,000,000 income" is the right answer and contains the figure. On the clean
+control, a write is printed with its diff rather than failed: there is no
+injection for it to obey, and recording a statement's balance is what the memory
+section of the prompt asks for.
 
 `--repeat` and `--model` exist to compare models. Run each scenario several
 times, because one run of a model whose output varies tells you little. The
