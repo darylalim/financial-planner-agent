@@ -10,6 +10,11 @@ Run::
 
     uv run python scripts/live_check.py           # every scenario
     uv run python scripts/live_check.py budget    # just one
+    uv run python scripts/live_check.py --repeat 3 --model anthropic:claude-opus-5
+
+``--repeat`` runs each scenario N times and ``--model`` swaps the model for one
+run, through the same ``build_model`` settings the app uses; a per-scenario
+summary table is printed at the end, so two models can be compared run for run.
 
 Needs ANTHROPIC_API_KEY. The `search` scenario is skipped without TAVILY_API_KEY.
 Costs real tokens -- a full run is roughly five minutes of model time.
@@ -20,6 +25,7 @@ workspace are never touched.
 
 from __future__ import annotations
 
+import argparse
 import atexit
 import json
 import os
@@ -29,7 +35,7 @@ import sys
 import tempfile
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -45,13 +51,29 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 # the leak is what nesting prevents. The atexit below removes the parent.
 _LIVE_ROOT = Path(tempfile.mkdtemp(prefix="planner-live-"))
 _LIVE_HOME = _LIVE_ROOT / "home"
-_LIVE_HOME.mkdir()
-shutil.copytree(PROJECT_ROOT / "agent_home" / "skills", _LIVE_HOME / "skills")
-(_LIVE_HOME / "workspace").mkdir()
-shutil.copy(
-    PROJECT_ROOT / "examples" / "sample-transactions.csv",
-    _LIVE_HOME / "workspace" / "sample-transactions.csv",
-)
+
+
+def _reset_home() -> None:
+    """Give a run the home a first-time user has: skills, one sample CSV, nothing else.
+
+    Called before every run, not once. Scenarios write plans to /workspace/ and
+    facts to /AGENTS.md, and a later run that finds them answers from the file
+    instead of calling the calculators -- which the checks then report as missing
+    tools and unsourced figures, charged to the model rather than the harness.
+    That is what a shared home did to every `--repeat` run after the first.
+    build_agent writes a fresh default AGENTS.md.
+    """
+    shutil.rmtree(_LIVE_HOME, ignore_errors=True)
+    _LIVE_HOME.mkdir()
+    shutil.copytree(PROJECT_ROOT / "agent_home" / "skills", _LIVE_HOME / "skills")
+    (_LIVE_HOME / "workspace").mkdir()
+    shutil.copy(
+        PROJECT_ROOT / "examples" / "sample-transactions.csv",
+        _LIVE_HOME / "workspace" / "sample-transactions.csv",
+    )
+
+
+_reset_home()
 os.environ["FINANCIAL_PLANNER_HOME"] = str(_LIVE_HOME)
 # atexit rather than a try/finally, so the temp home is removed on every exit
 # path -- including the early returns for a missing key or a bad scenario name.
@@ -64,7 +86,11 @@ from langchain_core.callbacks import BaseCallbackHandler  # noqa: E402
 from langgraph.checkpoint.memory import InMemorySaver  # noqa: E402
 
 from financial_planner.agent import build_agent  # noqa: E402
-from financial_planner.config import TAVILY_API_KEY, missing_required_keys  # noqa: E402
+from financial_planner.config import (  # noqa: E402
+    DEFAULT_MODEL,
+    TAVILY_API_KEY,
+    missing_required_keys,
+)
 from financial_planner.streaming import (  # noqa: E402
     Token,
     ToolEnd,
@@ -182,6 +208,45 @@ class ToolRecorder(BaseCallbackHandler):
         self.calls.append(ToolCall(name, agent, str(error)))
 
 
+class UsageRecorder(BaseCallbackHandler):
+    """Sums token usage over every model call in every agent.
+
+    A callback for the same reason as ToolRecorder: it reaches the subagent and
+    the summarizer, which ``streaming.py`` never sees. Input counts include
+    cache reads and writes, as ``usage_metadata`` reports them.
+    """
+
+    def __init__(self) -> None:
+        self.input_tokens = 0
+        self.output_tokens = 0
+
+    def on_llm_end(self, response, **kwargs):  # noqa: ARG002
+        for generations in response.generations:
+            for generation in generations:
+                usage = getattr(getattr(generation, "message", None), "usage_metadata", None)
+                if usage:
+                    self.input_tokens += usage.get("input_tokens", 0)
+                    self.output_tokens += usage.get("output_tokens", 0)
+
+
+@dataclass
+class RunResult:
+    """One run of one scenario, all turns, for the summary table."""
+
+    unsourced: int = 0
+    missing_tools: int = 0
+    defects: int = 0
+    empty_answers: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    seconds: float = 0.0
+    problems: list[str] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return not self.problems
+
+
 def check_answer(answer: str, tools: list[str]) -> list[str]:
     """Return a problem description for each defect found in a rendered answer."""
     problems = [
@@ -198,20 +263,23 @@ def check_answer(answer: str, tools: list[str]) -> list[str]:
     return problems
 
 
-def run_scenario(name: str, turns: list[str]) -> bool:
-    print(f"\n{'=' * 78}\nSCENARIO: {name}\n{'=' * 78}")
-    agent = build_agent(checkpointer=InMemorySaver())
+def run_scenario(name: str, turns: list[str], model: str) -> RunResult:
+    print(f"\n{'=' * 78}\nSCENARIO: {name}   MODEL: {model}\n{'=' * 78}", flush=True)
+    _reset_home()
+    agent = build_agent(model=model, checkpointer=InMemorySaver())
     recorder = ToolRecorder()
+    usage = UsageRecorder()
+    result = RunResult()
     config = {
         "configurable": {"thread_id": f"live-{name}-{uuid.uuid4()}"},
         # A graph step per node, and a tool round now crosses four (model,
         # TodoListMiddleware.after_model, tools, SkillsMiddleware.before_model --
         # the last added in deepagents 0.7.32), so this allows ~20 rounds.
         "recursion_limit": 84,
-        "callbacks": [recorder],
+        "callbacks": [recorder, usage],
     }
 
-    ok = True
+    run_started = time.time()
     ran_anywhere: set[str] = set()
     for i, prompt in enumerate(turns, 1):
         print(f"\n--- turn {i} ---\n> {prompt}\n")
@@ -234,8 +302,12 @@ def run_scenario(name: str, turns: list[str]) -> bool:
         problems = check_answer(answer, tools)
         fatal = [name for name in failed_tools if name not in RECOVERABLE_TOOLS]
         recovered = [name for name in failed_tools if name in RECOVERABLE_TOOLS]
+        result.defects += len(problems)
         if fatal:
             problems.append(f"tools returned errors: {fatal}")
+        if not answer.strip():
+            result.empty_answers += 1
+            problems.append("empty final answer")
 
         ran_anywhere.update(call.name for call in recorder.calls)
         delegated = [f"{c.name} ({c.agent})" for c in recorder.calls if c.agent != agent.name]
@@ -243,6 +315,7 @@ def run_scenario(name: str, turns: list[str]) -> bool:
         # rate (a figure fairly restated from an earlier turn is flagged), and
         # whether this becomes a failure is decided once that rate is known.
         unsourced = unsourced_figures(answer, [c.output for c in recorder.calls], prompt)
+        result.unsourced += len(unsourced)
 
         print(f"\n  tools: {tools}")
         if delegated:
@@ -251,18 +324,45 @@ def run_scenario(name: str, turns: list[str]) -> bool:
         print(f"  unsourced figures: {len(unsourced)} {unsourced if unsourced else ''}")
         for name in recovered:
             print(f"  ~~ {name} returned an error the agent could recover from")
+        # The error text, so a failure says what went wrong without a rerun.
+        # Matched by name, so a failing tool's successful calls print too.
+        for call in recorder.calls:
+            if call.name in failed_tools:
+                print(f"     {call.name} -> {call.output[:300]!r}")
         for problem in problems:
             print(f"  !! {problem}")
         if not problems:
             print("  checks: clean")
-        ok = ok and not problems
+        result.problems.extend(problems)
         print(f"\n--- answer ---\n{answer}\n")
 
     missing = missing_tools(name, ran_anywhere)
     if missing:
         print(f"  !! expected tools never ran, in any agent: {missing}")
-        ok = False
-    return ok
+        result.missing_tools = len(missing)
+        result.problems.append(f"expected tools never ran: {missing}")
+    result.input_tokens, result.output_tokens = usage.input_tokens, usage.output_tokens
+    result.seconds = time.time() - run_started
+    print(f"  tokens: {result.input_tokens} in / {result.output_tokens} out")
+    return result
+
+
+def print_summary(model: str, results: dict[str, list[RunResult]]) -> None:
+    """One row per scenario, summed over its runs -- the comparison table."""
+    print(f"\n{'=' * 78}\nSUMMARY   model: {model}")
+    header = (
+        f"  {'scenario':12s} {'runs':>4s} {'clean':>5s} {'unsrc':>5s} {'miss':>4s} "
+        f"{'defect':>6s} {'empty':>5s} {'in tok':>9s} {'out tok':>8s} {'secs':>6s}"
+    )
+    print(header)
+    for name, runs in results.items():
+        print(
+            f"  {name:12s} {len(runs):4d} {sum(r.ok for r in runs):5d} "
+            f"{sum(r.unsourced for r in runs):5d} {sum(r.missing_tools for r in runs):4d} "
+            f"{sum(r.defects for r in runs):6d} {sum(r.empty_answers for r in runs):5d} "
+            f"{sum(r.input_tokens for r in runs):9d} {sum(r.output_tokens for r in runs):8d} "
+            f"{sum(r.seconds for r in runs):6.0f}"
+        )
 
 
 def main() -> int:
@@ -271,7 +371,20 @@ def main() -> int:
         print(f"Cannot run: {', '.join(missing)} is not set.")
         return 2
 
-    requested = sys.argv[1:] or list(SCENARIOS)
+    parser = argparse.ArgumentParser(description="Live end-to-end check (spends real money).")
+    parser.add_argument("scenarios", nargs="*", help=f"any of {list(SCENARIOS)}; default all")
+    parser.add_argument("--repeat", type=int, default=1, help="runs per scenario")
+    parser.add_argument(
+        "--model",
+        default=DEFAULT_MODEL,
+        help="model spec; passed to build_agent, not via FINANCIAL_PLANNER_MODEL, "
+        "which config has already read at import",
+    )
+    args = parser.parse_args()
+    if args.repeat < 1:
+        parser.error("--repeat must be at least 1")
+
+    requested = args.scenarios or list(SCENARIOS)
     unknown = [n for n in requested if n not in SCENARIOS]
     if unknown:
         print(f"Unknown scenario(s): {unknown}. Available: {list(SCENARIOS)}")
@@ -290,12 +403,12 @@ def main() -> int:
         print("Cannot run: every requested scenario was skipped, so nothing was checked.")
         return 2
 
-    results = {name: run_scenario(name, SCENARIOS[name]) for name in requested}
-
-    print(f"\n{'=' * 78}\nSUMMARY")
-    for name, passed in results.items():
-        print(f"  {name:12s} {'clean' if passed else 'PROBLEM'}")
-    return 0 if all(results.values()) else 1
+    results = {
+        name: [run_scenario(name, SCENARIOS[name], args.model) for _ in range(args.repeat)]
+        for name in requested
+    }
+    print_summary(args.model, results)
+    return 0 if all(r.ok for runs in results.values() for r in runs) else 1
 
 
 if __name__ == "__main__":

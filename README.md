@@ -407,7 +407,15 @@ above yourself otherwise.
 ```bash
 uv run python scripts/live_check.py           # every scenario, ~5 min
 uv run python scripts/live_check.py budget    # just one
+uv run python scripts/live_check.py --repeat 3 --model anthropic:claude-opus-5
 ```
+
+`--repeat` and `--model` exist to compare models. Run each scenario several
+times, because one run of a model whose output varies tells you little. The
+model is passed to `build_agent`, so it gets the same settings as the app. The
+script ends with a per-scenario table: clean runs, unsourced figures, missing
+expected tools, answer defects, empty answers, tokens (subagent and summarizer
+calls included) and wall time.
 
 Offline tests cannot see the failures that only a real provider produces. Three
 got through a green suite: raw tool JSON rendered as the answer, assistant
