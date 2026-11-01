@@ -52,6 +52,12 @@ def _run() -> AppTest:
     return app
 
 
+def _button(app: AppTest, label: str):
+    """Find a button by its label. By index, a new button anywhere above it
+    would silently re-point the test at a different control."""
+    return next(b for b in app.button if b.label == label)
+
+
 class TestInitialRender:
     def test_renders_without_exception(self, with_api_key):
         app = _run()
@@ -63,8 +69,12 @@ class TestInitialRender:
     def test_offers_a_chat_input(self, with_api_key):
         assert len(_run().chat_input) > 0
 
-    def test_sidebar_has_new_conversation_button(self, with_api_key):
-        assert "New conversation" in [b.label for b in _run().sidebar.button]
+    def test_new_conversation_is_in_the_main_area_not_the_sidebar(self, with_api_key):
+        """A narrow window starts with the sidebar collapsed, so a control that
+        lives only there is hidden behind an arrow. One control, one place."""
+        app = _run()
+        assert "New conversation" in [b.label for b in app.main.button]
+        assert "New conversation" not in [b.label for b in app.sidebar.button]
 
     def test_starts_with_an_empty_transcript(self, with_api_key):
         assert _run().session_state["messages"] == []
@@ -310,6 +320,79 @@ class TestDocumentListing:
         assert not any(name in c for c in captions), captions
 
 
+def _app_constant(name: str):
+    """A module-level constant of app.py, read without running the script."""
+    import ast
+
+    tree = ast.parse(Path(APP_PATH).read_text())
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == name for t in node.targets
+        ):
+            return ast.literal_eval(node.value)
+    raise LookupError(name)
+
+
+class TestTheEmptyConversation:
+    """What the sidebar holds has a copy in the main area, because a narrow
+    window starts with the sidebar collapsed. Shown only before the first
+    message, the same condition the suggestion chips use."""
+
+    @pytest.fixture
+    def workspace(self, monkeypatch, tmp_path):
+        from financial_planner import config as config_module
+
+        monkeypatch.setattr(config_module, "WORKSPACE_DIR", tmp_path)
+        return tmp_path
+
+    def test_it_counts_the_documents_on_file(self, with_api_key, workspace):
+        for name in ("a.csv", "b.pdf"):
+            (workspace / name).write_bytes(b"col\n1\n")
+        captions = [c.value for c in _run().main.caption]
+        assert any("2 documents on file, listed in the sidebar" in c for c in captions), captions
+
+    def test_with_nothing_on_file_it_points_at_the_upload_button(self, with_api_key, workspace):
+        captions = [c.value for c in _run().main.caption]
+        # The chat box draws its upload button as a "+" on 1.66, not a paperclip.
+        assert any(":material/add: in the chat box" in c for c in captions), captions
+
+    def test_it_never_names_a_file(self, with_api_key, workspace):
+        """Only a count, so there is nothing to escape. Naming one would need
+        escape_markdown, as the sidebar does."""
+        (workspace / "household.csv").write_bytes(b"col\n1\n")
+        assert not any("household" in c.value for c in _run().main.caption)
+
+    def test_the_disclaimer_is_in_the_main_area_and_the_sidebar(self, with_api_key, workspace):
+        disclaimer = _app_constant("DISCLAIMER")
+        app = _run()
+        assert any(disclaimer in c.value for c in app.main.caption)
+        assert any(disclaimer in c.value for c in app.sidebar.caption)
+
+    def test_it_is_gone_once_the_conversation_starts(self, with_api_key, workspace, offline_turn):
+        disclaimer = _app_constant("DISCLAIMER")
+        app = _run()
+        app.pills[0].set_value(_raw_options(app)[0]).run()
+        assert not any(disclaimer in c.value for c in app.main.caption)
+        assert any(disclaimer in c.value for c in app.sidebar.caption)
+
+    def test_the_app_menu_carries_the_same_disclaimer(self):
+        """The menu sits top-right at every width. AppTest does not expose page
+        config, so this reads the call: About must be the constant itself, not
+        a copy of its text that could drift."""
+        import ast
+
+        tree = ast.parse(Path(APP_PATH).read_text())
+        call = next(
+            n
+            for n in ast.walk(tree)
+            if isinstance(n, ast.Call) and getattr(n.func, "attr", None) == "set_page_config"
+        )
+        menu = next(k.value for k in call.keywords if k.arg == "menu_items")
+        assert isinstance(menu, ast.Dict)
+        about = menu.values[[ast.literal_eval(k) for k in menu.keys].index("About")]
+        assert isinstance(about, ast.Name) and about.id == "DISCLAIMER"
+
+
 class TestFailedTurns:
     """Regression: a turn that raised left a user message with no reply, and the
     st.error vanished on the next rerun, so the transcript read as if the agent
@@ -445,7 +528,7 @@ class TestThreadIdentity:
         """
         app = _run()
         first = app.session_state["thread_id"]
-        app.sidebar.button[0].click().run()
+        _button(app, "New conversation").click().run()
         assert app.session_state["thread_id"] != first
 
 

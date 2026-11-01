@@ -22,8 +22,8 @@ needs to get going.
 | 0 | Upgrade dependencies; `agent_home/` allowlist; CI on 3.11 + 3.14 | — | 0.1.2 | ~5 min (actual ~7: one scenario rerun after a fix) | merged |
 | 1 | Opus 5.5, effort `high`, `drop_block`, finance-aware summarizer | 0 | 0.2.0 | ~40 min (actual ~45: one comparison discarded for a harness bug, two fix-and-rerun rounds; a full 5-scenario batch is ~5–11 min per model) | merged |
 | 2 | Quarantined `document-reader`; close all four PDF paths | 1 | 0.3.0 | ~15 min (actual ~11: a resume baseline, one shakedown run, and four 10-run `pdf-*` batches — rerun after two harness corrections, then twice for the memory-attribution rule, whose first wording made every run save; a 10-run batch is ~2.5 min, ~540k tokens in) | merged |
-| 3 | Matching light and dark theme | 0 | 0.4.0 | none | PR #5 |
-| 4 | Layout that adapts from a zoomed window to a wide monitor | 0 | next minor | none | not started |
+| 3 | Matching light and dark theme | 0 | 0.4.0 | none | merged |
+| 4 | Layout that adapts from a zoomed window to a wide monitor | 0 | 0.5.0 | none | PR #6 |
 
 Status values: `not started` / `in progress (<branch>)` / `PR #<n>` / `merged`. Phases 3
 and 4 may share one PR and one version bump.
@@ -1395,7 +1395,8 @@ here means:
     constant** used in both places (`CLAUDE.md`: don't restate a fact).
   - **What's on file.** The empty-conversation caption also says how many documents are
     in the workspace and where to find the list, e.g. "2 documents on file, listed in
-    the sidebar". With no documents, it points at the paperclip in the chat box instead.
+    the sidebar". With no documents, it points at the upload button in the chat box instead
+    (drawn as a **+** on 1.66.1, not a paperclip; the hint renders `:material/add:`).
 - **Drop the duplicated title.** The sidebar's `st.subheader("Financial planner")`
   repeats `st.title`. Remove it, which gives the sidebar's document list the top spot.
   The model caption stays in the sidebar.
@@ -1409,8 +1410,12 @@ here means:
   window is narrow. Add one rule to `SYSTEM_PROMPT`'s "# Communicating" section: at most
   four columns per table; compare more attributes with a short list per option instead.
   That keeps a table readable in a centred column at 320 px as well as on a laptop.
-  Confirm in step 4 how Streamlit handles a too-wide markdown table (horizontal scroll
-  or squashed); that decides whether the rule is a necessity or a nicety.
+  **Settled in step 6 (1.66.1): a necessity.** A too-wide table is neither squashed
+  nor scrolled in place: it overflows its wrappers (`overflow-x: visible`) and makes
+  the whole `stMain` scroll sideways, which is the two-way scrolling WCAG 1.4.10 rules
+  out. A 7-column table measured 568 px in a 288 px column at 320 px; even a 4-column
+  one with a two-word header measured 302 px, so the rule narrows the problem rather
+  than removing it.
 - **Don't shrink the type.** Keep the default 16 px base size; Phase 3's theme doesn't
   set `baseFontSize`. Zoom is the reader's control, and the layout has to reflow under
   it rather than fight it.
@@ -1432,7 +1437,7 @@ here means:
    race. Keep that test passing, and don't add an `except` around it.
 
 3. **Empty-conversation state**: under the pills, one `st.caption` with the document
-   count (or the paperclip hint) and `DISCLAIMER`. Shown only while
+   count (or the upload-button hint) and `DISCLAIMER`. Shown only while
    `st.session_state.messages` is empty, the same condition the pills use. A filename
    never appears here, only a count, so there's nothing to escape. If that changes,
    `escape_markdown` applies, as in the sidebar.
