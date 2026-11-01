@@ -173,21 +173,39 @@ layout: `auto` assumes the ordinary reading and *says* it assumed via
 look like a card statement. Under `positive_outflow` the inflow side is card payments,
 not earnings, so `savings_rate` is withheld rather than computed.
 
+**PDF text reaches only the `document-reader`, an agent with nothing else to call.**
+The main agent can write `/AGENTS.md`, so it never sees a PDF's words: `read_pdf_text`
+is in `READER_TOOLS`, not `ALL_TOOLS` (which the writing `general-purpose` subagent
+inherits), and `inspect_document` returns a PDF's structure, never its text. The
+reader's spec in `build_agent` must name `tools` and replace `FilesystemMiddleware` —
+a declarative subagent otherwise inherits every main tool and gets a *fresh* full
+filesystem. It is replaced by `_NoFilesystem`, a no-op matched by name, because
+deepagents refuses a `FilesystemMiddleware` without `read_file`, and because the library
+writes for an agent whatever tools it has: eviction would put an oversized result, raw
+PDF text, in `/large_tool_results/` for the main agent to read. **A quarantine has to
+cover what the library writes, not just the tools.** Never give the reader
+`mode="fork"` (it would inherit the main conversation). Its answer is still
+document-derived data. `TestDocumentReaderIsQuarantined` pins its exact set;
+`TestTheReaderNeverOffloads` its eviction, by behaviour.
+
 **PDFs are readable, not aggregatable — and the refusal carries the route forward.**
-`summarize_spending` rejects PDFs; `inspect_document` and `read_pdf_text` accept them.
-The built-ins do not: `agent.PDF_READ_DENY` denies `read_file`, `ls`, `glob` and `grep`
-every PDF (else `read_file` hands over the whole document, scans included). It is
-spelled case-insensitively and for dotfiles because the matcher is neither, and since
-listings then hide PDFs, `app.py` names the files on file in the user's message on a
-conversation's first turn and on any upload turn. `TestTheMainAgentCannotReadPdfsDirectly`
-pins it by behaviour.
-The dead end is stated repeatedly on purpose, because the generic "unsupported format"
-message it replaced made the model retry with different column names. `_pdf_statement`
-composes **all five** runtime statements from shared clauses — `NotTabular`, `PdfLocked`,
-both `inspect_document` aggregation branches, and `read_pdf_text`'s note — so a clause
-change reaches every site; only the routes a given document actually has are offered.
-Tests pin that every statement ends in `PDF_EXPORT_ROUTE`, and that the budget skill's
-prose has not drifted from the constants.
+`summarize_spending` rejects PDFs; `inspect_document` inspects them; only the reader's
+`read_pdf_text` reads them. The built-ins cannot: `agent.PDF_READ_DENY` denies
+`read_file`, `ls`, `glob` and `grep` every PDF (else `read_file` hands over the whole
+document, scans included), spelled case-insensitively and for dotfiles because the
+matcher is neither. Since listings then hide PDFs, `app.py` names the files on file in
+the user's message on a conversation's first turn and on any upload turn
+(`TestTheMainAgentCannotReadPdfsDirectly` pins the rule by behaviour). The dead end is
+stated repeatedly on purpose, because the generic "unsupported format" message it
+replaced made the model retry with different column names. The statements now have
+**two audiences**: the five runtime ones (`NotTabular`, `PdfLocked`, both
+`inspect_document` aggregation branches, `read_pdf_text`'s note) are composed by
+`_pdf_statement` from shared clauses, and the main-facing ones offer
+`PDF_DELEGATE_ROUTE`; `PDF_READ_ROUTE` goes only into the reader's system prompt. Both
+routes are built from `PDF_TOTALS_CAVEATS`, so the no-arithmetic and untrusted-data
+warnings cannot drift apart. Only the routes a given document actually has are offered.
+Tests pin that every statement ends in `PDF_EXPORT_ROUTE`, that no main-facing one names
+`read_pdf_text`, and that the budget skill's prose has not drifted from the constants.
 
 **Skills encode procedure, not finance knowledge.** Three in `agent_home/skills/`, loaded
 on demand. `retirement-readiness` exists mainly because the accumulation-then-drawdown
