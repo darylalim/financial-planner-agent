@@ -31,6 +31,7 @@ from typing import Any
 from deepagents import FilesystemMiddleware, create_deep_agent
 from deepagents._models import resolve_model
 from deepagents.backends import FilesystemBackend
+from deepagents.middleware.filesystem import FilesystemPermission
 from deepagents.middleware.summarization import create_summarization_middleware
 from langchain.agents.middleware import TodoListMiddleware
 from langchain.chat_models import init_chat_model
@@ -73,6 +74,20 @@ _Not yet recorded._
 ## Decisions already made
 _Nothing yet._
 """
+
+
+# Every PDF, at any depth and in any letter case. deepagents lowercases an
+# extension to decide a file is a PDF, but its permission matcher is
+# case-sensitive, so `*.pdf` alone would let `Statement.PDF` through as a whole
+# document block. The second pattern exists because the matcher's `*` skips a
+# leading dot: `.statement.pdf` matches only it. Its `**` also skips dot
+# *directories*, which no pattern list can cover at every depth -- and nothing
+# needs it to: an untrusted PDF reaches disk only through `uploads.py`, which
+# saves it flat into /workspace/ under its final name component.
+_PDF = "[pP][dD][fF]"
+PDF_READ_DENY = FilesystemPermission(
+    operations=["read"], paths=[f"/**/*.{_PDF}", f"/**/.*.{_PDF}"], mode="deny"
+)
 
 
 def _ensure_profile() -> None:
@@ -194,9 +209,18 @@ def build_agent(
             #
             # Omitted tools never reach the dispatchable tool node, so this is
             # a real removal rather than a hidden-from-the-model schema filter.
+            #
+            # PDF_READ_DENY keeps PDFs away from the built-in tools: `read_file`
+            # on one hands the model the whole document, scanned pages
+            # included, past every check the PDF tools make. "read" covers
+            # `ls`, `glob` and `grep` too, and listings filter a denied path out
+            # rather than failing, so the agent does not see PDFs there at all
+            # -- app.py names the files on file in the user's message instead.
+            # The `general-purpose` subagent inherits this instance by name.
             FilesystemMiddleware(
                 backend=backend,
                 tools=["ls", "read_file", "write_file", "edit_file", "glob", "grep"],
+                permissions=[PDF_READ_DENY],
             ),
             # deepagents 0.7 dropped todo planning from its default stack, so
             # `write_todos` has to be asked for explicitly. The system prompt

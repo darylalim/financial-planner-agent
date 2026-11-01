@@ -76,8 +76,12 @@ def agent() -> Any:
     return build_agent(model=ToolBindableFake(messages=iter([])), checkpointer=InMemorySaver())
 
 
+def bound_tools(agent: Any) -> dict[str, Any]:
+    return agent.nodes["tools"].bound._tools_by_name
+
+
 def bound_tool_names(agent: Any) -> set[str]:
-    return set(agent.nodes["tools"].bound._tools_by_name)
+    return set(bound_tools(agent))
 
 
 class TestBoundTools:
@@ -111,8 +115,8 @@ class TestBoundTools:
         assert bound_tool_names(agent) == {t.name for t in ALL_TOOLS} | HARNESS_TOOLS
 
 
-def subagent_tool_names(agent: Any, name: str = "general-purpose") -> set[str]:
-    """Reach the compiled subagent graph hanging off the `task` tool.
+def subagent_tools(agent: Any, name: str = "general-purpose") -> dict[str, Any]:
+    """Reach the bound tools of the compiled subagent hanging off the `task` tool.
 
     deepagents exposes no public accessor, so this walks the tool's closure. If
     a future version restructures that, this raises and the test fails loudly --
@@ -121,7 +125,11 @@ def subagent_tool_names(agent: Any, name: str = "general-purpose") -> set[str]:
     """
     task = agent.nodes["tools"].bound._tools_by_name["task"]
     cells = dict(zip(task.func.__code__.co_freevars, task.func.__closure__, strict=True))
-    return set(cells["subagent_graphs"].cell_contents[name].nodes["tools"].bound._tools_by_name)
+    return cells["subagent_graphs"].cell_contents[name].nodes["tools"].bound._tools_by_name
+
+
+def subagent_tool_names(agent: Any, name: str = "general-purpose") -> set[str]:
+    return set(subagent_tools(agent, name))
 
 
 class TestSubagentInheritsTheNarrowedFilesystem:
@@ -144,6 +152,92 @@ class TestSubagentInheritsTheNarrowedFilesystem:
 
     def test_the_subagent_can_still_do_the_finance_work(self, agent: Any) -> None:
         assert {t.name for t in ALL_TOOLS} <= subagent_tool_names(agent)
+
+
+def _run_tool(tool: Any, **args: Any) -> str:
+    """Call a bound built-in the way its tool node would, and return its text.
+
+    The filesystem tools take an injected runtime; theirs reads nothing from it
+    but the call id, so a bare one is enough to drive the real code path.
+    """
+    from langchain.tools import ToolRuntime
+
+    runtime = ToolRuntime(
+        state={"messages": []},
+        context=None,
+        config={},
+        stream_writer=lambda *_: None,
+        tool_call_id="test-call",
+        store=None,
+    )
+    out = tool.func(runtime=runtime, **args)
+    return str(getattr(out, "content", out))
+
+
+class TestTheMainAgentCannotReadPdfsDirectly:
+    """`read_file` on a PDF hands the model the whole document as a document
+    block, scanned pages included, past every check the PDF tools make.
+
+    Pinned by behaviour, not by the `permissions=` argument: the rule is passed
+    to a middleware that replaces deepagents' own by name, and a library change
+    that stops honouring it would leave the argument in place and the path open.
+    """
+
+    PHRASE = "PDF-ONLY PHRASE 7731"
+
+    @pytest.fixture
+    def pdfs(self) -> Any:
+        from test_documents import _pdf_bytes
+
+        from financial_planner.config import WORKSPACE_DIR, ensure_directories
+
+        ensure_directories()
+        # Upper case is the trap: deepagents lowercases an extension to decide a
+        # file is a PDF, but matches permissions case-sensitively. The dotfile
+        # is the other: the matcher's `*` skips a leading dot.
+        names = ["_pytest-direct.pdf", "_pytest-Direct.PDF", "._pytest-hidden.pdf"]
+        for name in names:
+            (WORKSPACE_DIR / name).write_bytes(_pdf_bytes(self.PHRASE))
+        control = WORKSPACE_DIR / "_pytest-direct.csv"
+        control.write_text(f"Note\n{self.PHRASE}\n", encoding="utf-8")
+        yield [f"/workspace/{n}" for n in names]
+        for name in names:
+            (WORKSPACE_DIR / name).unlink(missing_ok=True)
+        control.unlink(missing_ok=True)
+
+    @pytest.mark.parametrize("graph", ["main", "general-purpose"])
+    def test_read_file_is_denied(self, agent: Any, pdfs: list[str], graph: str) -> None:
+        """The general-purpose subagent inherits the rule by name match, so it
+        is driven separately: it has `read_file` too."""
+        tools = bound_tools(agent) if graph == "main" else subagent_tools(agent)
+        for path in pdfs:
+            out = _run_tool(tools["read_file"], file_path=path)
+            assert "permission denied" in out, (path, out)
+            assert self.PHRASE not in out
+
+    def test_grep_on_the_pdf_itself_is_denied(self, agent: Any, pdfs: list[str]) -> None:
+        """On the file's own path. Pointed at a directory, grep filters denied
+        files out of its results silently, so it would pass without showing
+        that the rule fired."""
+        for path in pdfs:
+            out = _run_tool(bound_tools(agent)["grep"], pattern="PHRASE", path=path)
+            assert "permission denied" in out, (path, out)
+
+    @pytest.mark.parametrize(
+        "tool, args", [("ls", {"path": "/workspace"}), ("glob", {"pattern": "**/*"})]
+    )
+    def test_listings_leave_pdfs_out(
+        self, agent: Any, pdfs: list[str], tool: str, args: dict[str, Any]
+    ) -> None:
+        """What app.py's file listing exists to make up for. The CSV is the
+        control: a listing that came back empty would pass the first half."""
+        out = _run_tool(bound_tools(agent)[tool], **args)
+        assert not any(path in out for path in pdfs), out
+        assert "/workspace/_pytest-direct.csv" in out
+
+    def test_other_documents_stay_readable(self, agent: Any, pdfs: list[str]) -> None:  # noqa: ARG002
+        out = _run_tool(bound_tools(agent)["read_file"], file_path="/workspace/_pytest-direct.csv")
+        assert self.PHRASE in out
 
 
 def summarizers_by_agent(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[Any]]:

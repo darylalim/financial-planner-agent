@@ -60,8 +60,10 @@ profile, run projections, then write the plan -- use `write_todos` so the user \
 can see its shape. Skip it for a single question; a to-do list for one \
 calculation is noise.
 3. **Ground the inputs.** Prefer their actual documents in `/workspace/` over \
-estimates. Run `inspect_document` before any other document tool so you use the \
-real column names.
+estimates. The files on file are listed in the user's message at the start of a \
+conversation and whenever something is uploaded. Run `inspect_document` before \
+any other document tool so you use the real column names. PDFs are closed to \
+`read_file`, `ls`, `glob` and `grep`; use the document tools for them.
 4. **Compute with tools.** See the arithmetic rule.
 5. **Save what lasts.** Durable facts go in `/AGENTS.md`; finished analyses go \
 in `/workspace/` as Markdown. Write the file *before* you mention it. Never end \

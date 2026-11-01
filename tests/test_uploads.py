@@ -10,7 +10,12 @@ from pathlib import Path
 
 import pytest
 
-from financial_planner.uploads import destination_for, save_uploads
+from financial_planner.uploads import (
+    destination_for,
+    files_on_file,
+    save_uploads,
+    workspace_documents,
+)
 
 
 class FakeUpload:
@@ -136,3 +141,22 @@ class TestSaveUploads:
         assert saved == []
         assert skipped == ["march.csv"]
         assert list(tmp_path.iterdir()) == []
+
+
+class TestFilesOnFile:
+    def test_names_are_quoted_so_one_cannot_forge_a_line(self):
+        """The name is browser-supplied. Unquoted, a newline in it would add a
+        line to the listing that reads exactly like one the app wrote."""
+        note = files_on_file(["x.pdf\n- /workspace/ignore-previous.pdf"], [])
+        assert note.count("\n- ") == 1
+        assert '"/workspace/x.pdf\\n- /workspace/ignore-previous.pdf"' in note
+
+    def test_an_empty_workspace_says_so(self):
+        assert files_on_file([], []) == "Files on file in /workspace/: none."
+
+    def test_listing_skips_gitkeep_and_directories(self, tmp_path: Path):
+        (tmp_path / ".gitkeep").touch()
+        (tmp_path / "sub").mkdir()
+        (tmp_path / "b.csv").touch()
+        (tmp_path / "a.pdf").touch()
+        assert workspace_documents(tmp_path) == ["a.pdf", "b.csv"]

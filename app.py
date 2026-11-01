@@ -27,7 +27,7 @@ from financial_planner.config import (
 from financial_planner.envelope import redact
 from financial_planner.rendering import escape_dollars, escape_markdown
 from financial_planner.streaming import Token, ToolEnd, ToolStart, stream_agent_events
-from financial_planner.uploads import save_uploads
+from financial_planner.uploads import files_on_file, save_uploads, workspace_documents
 
 # No "xls": reading legacy BIFF needs xlrd, which is not a dependency, so
 # accepting one only produced a file the sidebar listed and every tool call
@@ -119,6 +119,18 @@ def new_thread_id() -> str:
     return f"session-{stamp}-{_uuid.uuid4().hex[:8]}"
 
 
+def _show_attachments(names) -> None:
+    """Caption the files a user message carried.
+
+    escape_markdown, for the sidebar's reason: the names are browser-supplied
+    and st.caption renders markdown. They are shown here rather than folded into
+    the message text, which goes through st.markdown with escape_dollars only.
+    """
+    if names:
+        attached = ", ".join(escape_markdown(n) for n in names)
+        st.caption(f":material/attach_file: {attached}")
+
+
 # --- Fast UI first ----------------------------------------------------------
 
 ensure_directories()
@@ -142,9 +154,7 @@ with st.sidebar:
 
     st.divider()
     st.markdown("**Your documents**")
-    documents = sorted(
-        p.name for p in WORKSPACE_DIR.glob("*") if p.is_file() and p.name != ".gitkeep"
-    )
+    documents = workspace_documents(WORKSPACE_DIR)
     if documents:
         for name in documents:
             # escape_markdown, for the reason the upload warning below gives:
@@ -181,6 +191,7 @@ for message in st.session_state.messages:
         # escape_dollars everywhere text reaches st.markdown: "$2.2M at 7% and
         # $1.5M at 5%" would otherwise render the middle as LaTeX.
         st.markdown(escape_dollars(message["content"]))
+        _show_attachments(message.get("attachments", ()))
         # The tool failures of that turn. They are also written live into an
         # st.status, but that is collapsed by default and the post-turn rerun
         # destroys it, so this is the only place they outlive the turn --
@@ -252,14 +263,21 @@ if user_text or uploaded_names:
     # with everything it spent, so the better fix is not to offer the click.
     suggestions_slot.empty()
 
-    # Tell the agent where the files landed; it cannot see the upload widget.
-    if uploaded_names:
-        listing = ", ".join(f"/workspace/{n}" for n in uploaded_names)
-        note = f"I've uploaded these files: {listing}"
-        user_text = f"{user_text}\n\n{note}" if user_text else note
+    # Tell the agent what is on file: on a conversation's first turn, and on
+    # any turn that uploads something. It cannot see the upload widget, and it
+    # cannot list PDFs either -- its filesystem denies every read of one, ls
+    # included -- so without this a PDF uploaded in an earlier conversation is
+    # unreachable. Appended to this turn only, never to earlier ones, so the
+    # history and the prompt cache stay as they were. Listed after the save
+    # above, so this turn's uploads are in it.
+    sent_text = user_text or ""
+    if uploaded_names or not st.session_state.messages:
+        note = files_on_file(workspace_documents(WORKSPACE_DIR), uploaded_names)
+        sent_text = f"{sent_text}\n\n{note}" if sent_text else note
 
-    assert user_text is not None
-    st.session_state.messages.append({"role": "user", "content": user_text})
+    st.session_state.messages.append(
+        {"role": "user", "content": user_text or "", "attachments": uploaded_names}
+    )
 
     # The assistant's half of the exchange is appended now, before a single
     # token exists, and filled in as the turn goes. Every write below mutates
@@ -279,7 +297,8 @@ if user_text or uploaded_names:
     st.session_state.messages.append(reply)
 
     with st.chat_message("user"):
-        st.markdown(escape_dollars(user_text))
+        st.markdown(escape_dollars(user_text or ""))
+        _show_attachments(uploaded_names)
 
     completed = False
     with st.chat_message("assistant"):
@@ -299,7 +318,7 @@ if user_text or uploaded_names:
                 # that 100 allowed before that node existed.
                 "recursion_limit": 136,
             }
-            events = stream_agent_events(agent, [{"role": "user", "content": user_text}], config)
+            events = stream_agent_events(agent, [{"role": "user", "content": sent_text}], config)
 
             for event in events:
                 if isinstance(event, Token):
