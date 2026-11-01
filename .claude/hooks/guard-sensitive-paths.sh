@@ -4,8 +4,10 @@
 # Refuses Claude Code writes to the things this repo cannot recover: live API
 # keys (.env), the household's personal financial data under the agent's home,
 # the SQLite checkpointer, and the hook configuration that enforces all of it.
-# Everything else is untouched -- skills/**, .env.example and .gitkeep stay
-# editable.
+# Under the agent's home it is an allowlist, as .gitignore is: only skills/**
+# and workspace/.gitkeep are editable, so a runtime folder a library adds later
+# is refused by default rather than missed. Elsewhere only the named files are
+# refused; .env.example stays editable.
 #
 # SCOPE, stated plainly: this is a tool-dispatch filter, not a syscall boundary.
 # Bash is deliberately unmatched, because the Streamlit app writes these same
@@ -61,11 +63,28 @@ fi
 [ "$p" = "$db" ] && \
   deny "This is the SQLite checkpointer holding real planning conversations. It is binary; a text write corrupts it."
 
+# An allowlist, not a list of known runtime folders. The list missed a folder
+# each time a library added one (conversation_history/, large_tool_results/,
+# then blobs/ for offloaded binary content), and .gitignore had already moved to
+# an allowlist for the same reason. Only the tracked skills stay editable;
+# workspace/.gitkeep was let through above.
+#
+# Skipped when the home is the project root or one of its ancestors: the
+# pattern below would then refuse every edit in the repository. That layout
+# already breaks the agent's filesystem boundary, so it is not one to support.
+case "$root/" in
+  "$home"/*) home_contains_root=1 ;;
+  *)         home_contains_root=0 ;;
+esac
+
 case "$p" in
   "$home"/AGENTS.md)
     deny "This is the household profile the running app maintains (income, balances, goals). It is gitignored personal data. Edit DEFAULT_PROFILE in src/financial_planner/agent.py to change the template instead." ;;
-  "$home"/workspace/*|"$home"/conversation_history/*|"$home"/large_tool_results/*)
-    deny "This is personal financial data the app writes at runtime (uploaded statements, generated plans, summarizer offloads). It is gitignored and unrecoverable." ;;
+  "$home"/skills/*)
+    ;;
+  "$home"/*)
+    [ "$home_contains_root" = 1 ] || \
+      deny "This is personal financial data the app writes at runtime under its home (uploaded statements, generated plans, summarizer and eviction offloads, and any folder a library adds later). It is gitignored and unrecoverable. Only skills/** is editable here." ;;
 esac
 
 # The hooks constrain this session, so this session should not be able to edit
