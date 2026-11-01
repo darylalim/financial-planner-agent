@@ -158,6 +158,13 @@ testable (`tests/test_rendering.py`, and `test_app.py` asserts escaping at the `
 boundary); what no test could do was **find** the class originally, since unit tests and
 `AppTest` both inspect markdown source rather than the render.
 
+**The summarizer is replaced by name, to carry `FINANCE_SUMMARY_PROMPT`, and that
+fails open.** It goes in `middleware=` like the filesystem narrowing, so an upstream
+rename (or a subclass, whose `.name` differs) silently restores the coding-session
+default prompt. `TestSummarizerIsFinanceAware` pins it on both graphs. `build_model`
+sends `drop_block` only to `config.THINKING_BINDING_MODELS`, the models that run
+the thinking-block history check a summary trips.
+
 **Sign conventions cannot be settled by the numbers.** `summarize_spending` handles
 negative-outflow, `positive_outflow` (Amex and several card issuers), and separate
 debit/credit columns (`inflow_column=`). The parameter defaults to `"auto"`, not to a

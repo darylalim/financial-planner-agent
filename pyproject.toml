@@ -6,9 +6,12 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
 dependencies = [
-    # Agent harness — pulls langchain, langchain-core, langchain-anthropic,
-    # langgraph and langsmith transitively.
+    # Agent harness — pulls langchain, langchain-core, langgraph and langsmith
+    # transitively.
     "deepagents>=0.7.32",
+    # Direct, not left to deepagents: build_model sends `effort`, the whole
+    # `thinking` dict and `betas`, which ChatAnthropic routes to the beta client.
+    "langchain-anthropic>=1.7.6",
     # Chat UI
     "streamlit>=1.57",
     # Market data (no API key required)

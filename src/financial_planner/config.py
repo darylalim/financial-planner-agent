@@ -75,9 +75,34 @@ VIRTUAL_MEMORY = "/AGENTS.md"
 
 # --- Model ------------------------------------------------------------------
 # Provider-prefixed string resolved by langchain's init_chat_model, so swapping
-# providers is a one-string change. Claude Opus 5 is the default: this agent
-# does long-horizon multi-step planning, which is exactly where it earns out.
-DEFAULT_MODEL = os.getenv("FINANCIAL_PLANNER_MODEL", "anthropic:claude-opus-5")
+# providers is a one-string change. Claude Opus 5.5 is the default: this agent
+# does long-horizon multi-step planning, which is exactly where Opus earns out.
+DEFAULT_MODEL = os.getenv("FINANCIAL_PLANNER_MODEL", "anthropic:claude-opus-5-5")
+
+# Set explicitly for every Anthropic model, because Opus 5.5 defaults to
+# `medium` -- one level below Opus 5 -- so a bare model swap would quietly make
+# the planner think less.
+ANTHROPIC_EFFORT = "high"
+
+# Models that run preserved thinking's history check: a thinking block is valid
+# only while the system prompt, tools and every earlier message are unchanged
+# since it was written. The summarizer breaks that on purpose -- it replaces old
+# turns with a summary and keeps the newest turns, thinking blocks included --
+# so these models are sent `drop_block`, which drops the stale blocks instead of
+# failing the turn with a 400. Accounts created before 2026-08-31 are not
+# enforced by default, but sending the field opts them in, so every install
+# behaves the same. Other Anthropic models get langchain's default `thinking`,
+# which is why going back to Opus 5 via FINANCIAL_PLANNER_MODEL works unchanged.
+THINKING_BINDING_MODELS = frozenset(
+    {
+        "claude-fable-5-1",
+        "claude-mythos-5-1",
+        "claude-opus-5-5",
+        "claude-sonnet-5-5",
+        "claude-haiku-5-5",
+    }
+)
+THINKING_BINDING_BETA = "thinking-binding-controls-2026-08-01"
 
 # --- Secrets ----------------------------------------------------------------
 
