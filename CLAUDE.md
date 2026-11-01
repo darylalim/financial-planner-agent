@@ -23,6 +23,20 @@ uv run ruff check .
 uv run pytest -q               # offline, no API key, ~30s
 ```
 
+**Run `pytest` locally with the keys hidden**, the way CI runs it:
+
+```bash
+ANTHROPIC_API_KEY= TAVILY_API_KEY= LANGSMITH_TRACING=false uv run pytest -q
+```
+
+`config.py` calls `load_dotenv()`, so a plain local run picks up the owner's real `.env`.
+A test that builds a real model could then pass locally and fail in CI, or make a billed
+call. The `.env` also turns LangSmith tracing on, so every test that compiles a graph
+uploads a trace; this once used up the monthly trace quota in the middle of a gate run.
+`load_dotenv()` never overrides a variable that is already set, even to an empty string,
+which is why this works. The Stop hook runs plain `pytest`, so it does not count as the
+gate.
+
 Tests are grouped in classes, so `tests/test_x.py::test_name` with no class selects
 nothing and exits **green** with only a warning. The forms that work:
 
@@ -45,7 +59,17 @@ CI (`.github/workflows/ci.yml`) runs `uv sync --locked` plus the gate on Python 
 the `requires-python` floor — and on 3.14, what a local `.venv` is likely to be. A local
 3.11 run must use `uv run --isolated --python 3.11`; without `--isolated` it rebuilds
 the project `.venv` on 3.11 under the hooks. A push to `main` whose `pyproject.toml`
-version has no tag yet publishes a GitHub Release.
+version has no tag yet publishes a GitHub Release. **When a PR changes what the app does,
+bump the version with `uv version <x.y.z>` as the PR's last commit.** A PR that only
+touches docs needs no bump. `uv version` updates `uv.lock`'s copy of the version
+too. Editing `pyproject.toml` by hand fails CI's `uv sync --locked`, and so does
+committing `pyproject.toml` and `uv.lock` separately.
+
+**Live checks and any one-off script that calls the API spend real money: ask the owner
+first.** Ask once per piece of work, giving an estimate of model time and the list of
+runs. Before a paid batch, do one cheap run to shake out the harness. To compare models,
+use `--repeat N --model SPEC`, because one run of a model whose output varies says
+little. Upload live fixtures under neutral names: the model reads a filename as evidence.
 
 ## Architecture
 
@@ -210,6 +234,16 @@ warnings cannot drift apart. Only the routes a given document actually has are o
 Tests pin that every statement ends in `PDF_EXPORT_ROUTE`, that no main-facing one names
 `read_pdf_text`, and that the budget skill's prose has not drifted from the constants.
 
+**The layout adapts only through Streamlit's own reflow, and the server never learns
+the window width.** `st.context` has no viewport width, so Python cannot branch on it.
+On a narrow window the sidebar starts collapsed, so **nothing the user needs may live
+only in the sidebar**. That is why "New conversation" sits in the header row and
+`DISCLAIMER` appears in three places from one constant. `layout="centered"` is deliberate:
+the app is prose, and line length is what keeps it readable on a wide screen. A markdown
+table is the one thing reflow cannot fix. On 1.66.1 a table too wide for the column
+makes the whole `stMain` scroll sideways rather than scrolling in place, so the prompt
+caps tables at four columns. Tests find widgets by label, not by index.
+
 **Skills encode procedure, not finance knowledge.** Three in `agent_home/skills/`, loaded
 on demand. `retirement-readiness` exists mainly because the accumulation-then-drawdown
 structure is easy to skip, and skipping it is the common failure.
@@ -239,6 +273,45 @@ structure is easy to skip, and skipping it is the common failure.
   `agent_home/large_tool_results/`. Ignore patterns must be spelled with the full
   `agent_home/` prefix — a pattern containing a slash is anchored to the directory holding
   `.gitignore`, so a bare `workspace/*` silently matches nothing here.
+- **Word a prompt rule about *how* to do something conditionally** ("If you do record
+  one…", "If you do use a table…"). Worded as an order, Opus 5.5 treats it as an
+  instruction to do the thing: an imperative memory rule took saves after reading a
+  statement from 1 run in 20 to 10 in 10. Tests pin the conditional wording.
+- **Claude never opens the real checkpoint database**, because it holds household data.
+  When saved conversations matter (a library, model or tool-set change), the owner counts
+  threads read-only. The database is in WAL mode, so `-readonly` fails with error 14 when
+  no `-shm` file exists; use `sqlite3 "file:planner_state.sqlite?immutable=1"`, which is
+  safe while there is no `-wal` file. Use a throwaway `FINANCIAL_PLANNER_HOME` for
+  Claude's own resume tests.
+- **Planning.** A fix or feature that fits in one session is a GitHub issue → one branch
+  → one PR (`Fixes #N`). Work spanning several sessions gets a plan in `docs/plans/`,
+  started from `docs/plans/TEMPLATE.md`, with one phase per PR. Delete the plan in its own
+  small PR once the last phase merges, after moving anything still true to README or this
+  file. A plan holds goals and decisions and points at code; it does not describe the
+  code, because that copy drifts.
+
+## Upgrading dependencies
+
+`uv lock --upgrade` moves every package, and the failures it causes here are silent, so
+passing tests are not enough on their own.
+- **Read the `deepagents` changelog for the internals this repo relies on:** middleware
+  name matching; `FilesystemMiddleware(tools=...)`; general-purpose subagent assembly and
+  what it inherits; `create_summarization_middleware` and its `summary_prompt`; harness
+  profiles (`TestHarnessProfileAssumptions` assumes none overrides Anthropic tools); the
+  default middleware stack and the nodes in its tool loop (`TestRecursionLimitBudget`; a
+  new node once ran `recursion_limit` out a quarter sooner); which extensions `read_file`
+  opens as multimodal (relevant to `PDF_READ_DENY`); and where eviction and summarization
+  write. Then run the live check: two regressions only showed up live.
+- **Put a `ruff` bump in one mechanical commit with the lock**, formatting applied to the
+  whole repo, before hand-editing any `.py`. Otherwise the hook scatters the new
+  formatting through unrelated diffs. Don't force a package past another package's cap.
+- **Diff the licences** of all installed packages before and after (`importlib.metadata`),
+  and stop at anything in the GPL family. `peewee` (pulled in by `yfinance`) ships no
+  licence field; its repository says MIT.
+- **New runtime folders** under `agent_home/` are git-ignored by the allowlist, but
+  `.claude/hooks/guard-sensitive-paths.sh` lists folders by name. Ask the owner to add any
+  new one; `/blobs/` (written only with `offload_binary_content=True`, which the app does
+  not set) is not listed yet.
 
 ## Known limits
 
