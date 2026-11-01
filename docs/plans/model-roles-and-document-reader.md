@@ -20,7 +20,7 @@ needs to get going.
 | Phase | Goal | Depends on | Version | Live cost (model time) | Status |
 |---|---|---|---|---|---|
 | 0 | Upgrade dependencies; `agent_home/` allowlist; CI on 3.11 + 3.14 | — | 0.1.2 | ~5 min (actual ~7: one scenario rerun after a fix) | merged |
-| 1 | Opus 5.5, effort `high`, `drop_block`, finance-aware summarizer | 0 | 0.2.0 | ~40 min | in progress (`phase-1-opus-5-5`) |
+| 1 | Opus 5.5, effort `high`, `drop_block`, finance-aware summarizer | 0 | 0.2.0 | ~40 min (actual ~45: one comparison discarded for a harness bug, two fix-and-rerun rounds; a full 5-scenario batch is ~5–11 min per model) | PR #3 |
 | 2 | Quarantined `document-reader`; close all four PDF paths | 1 | 0.3.0 | ~15 min | not started |
 | 3 | Matching light and dark theme | 0 | next minor | none | not started |
 | 4 | Layout that adapts from a zoomed window to a wide monitor | 0 | next minor | none | not started |
