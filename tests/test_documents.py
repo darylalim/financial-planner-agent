@@ -844,11 +844,13 @@ class TestPdfIsNotATable:
         assert "NotTabular" in result["error"]
 
     def test_the_refusal_carries_both_routes_forward(self, statement_pdf):
-        """Read the printed totals, or get a real export. A refusal that states
-        neither is what sent the model back round the same failing call.
+        """Have the printed totals read, or get a real export. A refusal that
+        states neither is what sent the model back round the same failing call.
         """
+        from financial_planner.tools.documents import DOCUMENT_READER
+
         result = _call(summarize_spending, path=statement_pdf, amount_column="Amount")
-        assert "read_pdf_text" in result["error"]
+        assert DOCUMENT_READER in result["error"]
         assert "CSV or XLSX" in result["error"]
 
     def test_inspect_document_says_so_before_the_call_is_made(self, statement_pdf):
@@ -856,10 +858,31 @@ class TestPdfIsNotATable:
         document tool, which makes this the earliest point the dead end is
         visible -- and it is a success payload, not an error.
         """
+        from financial_planner.tools.documents import DOCUMENT_READER
+
         result = _call(inspect_document, path=statement_pdf)
         assert "error" not in result
         assert "summarize_spending will refuse" in result["aggregation"]
-        assert "read_pdf_text" in result["aggregation"]
+        assert DOCUMENT_READER in result["aggregation"]
+
+    def test_inspect_document_returns_no_pdf_text(self, statement_pdf):
+        """The quarantine. inspect_document is the main agent's, and the main
+        agent can write, so it reports a PDF's structure and never its words.
+        Asserted on a phrase from the fixture, not on a key name: a renamed
+        excerpt field would pass a key check with the text still in it.
+        """
+        raw = inspect_document.invoke({"path": statement_pdf})
+        assert "412.00" not in raw
+        assert "monthly spending" not in raw
+        assert json.loads(raw)["text_first_seen_on_page"] == 1
+
+    def test_no_main_facing_statement_names_a_tool_the_main_agent_lacks(self, statement_pdf):
+        """read_pdf_text is the reader's alone. Naming it to the main agent
+        would send it after a tool it cannot call."""
+        refusal = _call(summarize_spending, path=statement_pdf, amount_column="Amount")["error"]
+        note = _call(inspect_document, path=statement_pdf)["aggregation"]
+        assert "read_pdf_text" not in refusal
+        assert "read_pdf_text" not in note
 
     def test_a_pdf_is_still_readable(self, statement_pdf):
         """The fix must not turn a readable format into a rejected one."""
@@ -921,24 +944,38 @@ class TestPdfIsNotATable:
         assert refusal.endswith(PDF_EXPORT_ROUTE)
         assert note.endswith(PDF_EXPORT_ROUTE)
 
-    def test_the_read_route_cannot_be_offered_without_its_caveats(self):
+    @pytest.mark.parametrize("route", ["PDF_READ_ROUTE", "PDF_DELEGATE_ROUTE"])
+    def test_a_read_route_cannot_be_offered_without_its_caveats(self, route):
         """The point of splitting the text into clauses. Both caveats live
-        inside the route they qualify, so a site that offers the route carries
-        them by construction -- dropping one means dropping the whole route,
-        which is a decision rather than an omission.
+        inside the routes they qualify -- the reader's and the main agent's --
+        so a site that offers a route carries them by construction: dropping one
+        means dropping the whole route, which is a decision, not an omission.
         """
-        from financial_planner.tools.documents import PDF_READ_ROUTE
+        from financial_planner.tools import documents
 
-        assert "doing the arithmetic yourself" in PDF_READ_ROUTE
-        assert "untrusted user data" in PDF_READ_ROUTE
+        text = getattr(documents, route)
+        assert "doing the arithmetic yourself" in text
+        assert "untrusted user data" in text
 
-    def test_a_rendered_statement_still_gets_the_read_route(self, statement_pdf):
+    def test_a_rendered_statement_still_gets_the_delegate_route(self, statement_pdf):
         """The scanned and locked cases must not cost the ordinary one its
-        route: text came out, so reading the printed totals is still on.
+        route: text came out, so having the printed totals read is still on.
         """
+        from financial_planner.tools.documents import PDF_DELEGATE_ROUTE
+
+        assert PDF_DELEGATE_ROUTE in _call(inspect_document, path=statement_pdf)["aggregation"]
+
+    def test_the_read_route_reaches_the_reader_and_only_the_reader(self, statement_pdf):
+        """PDF_READ_ROUTE's only audience is the agent that reads. It is in the
+        reader's system prompt, and in nothing the main agent's tools return."""
+        from financial_planner.prompts import DOCUMENT_READER_PROMPT, SYSTEM_PROMPT
         from financial_planner.tools.documents import PDF_READ_ROUTE
 
-        assert PDF_READ_ROUTE in _call(inspect_document, path=statement_pdf)["aggregation"]
+        assert PDF_READ_ROUTE in DOCUMENT_READER_PROMPT
+        assert PDF_READ_ROUTE not in SYSTEM_PROMPT
+        refusal = _call(summarize_spending, path=statement_pdf, amount_column="Amount")["error"]
+        assert PDF_READ_ROUTE not in refusal
+        assert PDF_READ_ROUTE not in _call(inspect_document, path=statement_pdf)["aggregation"]
 
     def test_a_pdf_that_is_not_there_is_not_refused_as_a_pdf(self):
         """Nothing touched the disk before the suffix check, so a path that did
@@ -1004,10 +1041,15 @@ class TestPdfThatCannotBeRead:
         agent reads "report the totals it prints", finds none, and answers
         without the numbers.
         """
-        from financial_planner.tools.documents import PDF_EXPORT_ROUTE, PDF_READ_ROUTE
+        from financial_planner.tools.documents import (
+            DOCUMENT_READER,
+            PDF_DELEGATE_ROUTE,
+            PDF_EXPORT_ROUTE,
+        )
 
         note = _call(inspect_document, path=scanned_pdf)["aggregation"]
-        assert PDF_READ_ROUTE not in note
+        assert PDF_DELEGATE_ROUTE not in note
+        assert DOCUMENT_READER not in note
         assert "scan or a photo" in note
         assert note.endswith(PDF_EXPORT_ROUTE)
 
@@ -1030,14 +1072,14 @@ class TestPdfThatCannotBeRead:
         file returned the totals. Banks and brokerages lead with a marketing
         insert or a scanned letterhead routinely.
         """
-        from financial_planner.tools.documents import PDF_READ_ROUTE, read_pdf_text
+        from financial_planner.tools.documents import PDF_DELEGATE_ROUTE, read_pdf_text
 
         ensure_directories()
         path = WORKSPACE_DIR / "_pytest-cover.pdf"
         _write_multipage_pdf(path, [None, "Total monthly spending 412.00", "Net 88.00"])
         try:
             result = _call(inspect_document, path="/workspace/_pytest-cover.pdf")
-            assert PDF_READ_ROUTE in result["aggregation"]
+            assert PDF_DELEGATE_ROUTE in result["aggregation"]
             assert "scan or a photo" not in result["aggregation"]
             assert result["text_first_seen_on_page"] == 2
             # The claim the note used to contradict.
@@ -1052,7 +1094,11 @@ class TestPdfThatCannotBeRead:
         was actually looked at or it asserts something the later pages
         disprove.
         """
-        from financial_planner.tools.documents import MAX_PDF_PROBE_PAGES, read_pdf_text
+        from financial_planner.tools.documents import (
+            MAX_PDF_PROBE_PAGES,
+            PDF_DELEGATE_ROUTE,
+            read_pdf_text,
+        )
 
         ensure_directories()
         path = WORKSPACE_DIR / "_pytest-longcover.pdf"
@@ -1068,6 +1114,9 @@ class TestPdfThatCannotBeRead:
             # start_page + 4 -- the probe window exactly -- so "try a later
             # range" would send the model back over the pages it just checked.
             assert f"start_page={MAX_PDF_PROBE_PAGES + 1}" in note
+            # The lead sends the agent to the reader, so the route's caveats
+            # go with it: the later pages may well have text to read.
+            assert PDF_DELEGATE_ROUTE in note
             text = _call(
                 read_pdf_text,
                 path="/workspace/_pytest-longcover.pdf",
@@ -1162,3 +1211,25 @@ class TestPdfThatCannotBeRead:
         result = _call(read_pdf_text, path=locked_pdf)
         assert "PdfLocked" in result["error"]
         assert "FileNotDecryptedError" not in result["error"]
+
+
+class TestPdfTextStaysOffDisk:
+    def test_max_pdf_chars_stays_below_the_eviction_threshold(self):
+        """Defence in depth, for the margin the reader no longer relies on.
+
+        deepagents writes a tool result over its token limit to
+        /large_tool_results/, which any agent with read_file can open. The
+        reader has no eviction at all now (TestTheReaderNeverOffloads), so this
+        is no longer the only thing keeping PDF text off disk -- but if
+        read_pdf_text were ever bound to an agent that does evict, this cap is
+        what would keep its text in context rather than in a readable file.
+        """
+        import inspect
+
+        from deepagents import FilesystemMiddleware
+        from deepagents.middleware.filesystem import NUM_CHARS_PER_TOKEN
+
+        from financial_planner.tools.documents import MAX_PDF_CHARS
+
+        limit = inspect.signature(FilesystemMiddleware).parameters["tool_token_limit_before_evict"]
+        assert MAX_PDF_CHARS < limit.default * NUM_CHARS_PER_TOKEN

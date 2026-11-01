@@ -104,6 +104,27 @@ THINKING_BINDING_MODELS = frozenset(
 )
 THINKING_BINDING_BETA = "thinking-binding-controls-2026-08-01"
 
+
+def anthropic_model_name(spec: str) -> str | None:
+    """The bare Claude model name in ``spec``, or ``None`` if it is not Anthropic's.
+
+    Mirrors init_chat_model's inference: an unprefixed ``claude-...`` is Anthropic.
+    """
+    provider, _, name = spec.rpartition(":")
+    if provider == "anthropic" or (not provider and name.startswith("claude")):
+        return name
+    return None
+
+
+# The document-reader subagent's model: the one agent that reads PDF text, and
+# the only one with no write tools. Reading-heavy work that still has to judge
+# what to extract, so Sonnet rather than Haiku. A non-Anthropic main model is
+# reused rather than paired with Sonnet, so overriding FINANCIAL_PLANNER_MODEL
+# alone never quietly starts needing an Anthropic key.
+READER_MODEL = os.getenv("FINANCIAL_PLANNER_READER_MODEL") or (
+    "anthropic:claude-sonnet-5-5" if anthropic_model_name(DEFAULT_MODEL) else DEFAULT_MODEL
+)
+
 # --- Secrets ----------------------------------------------------------------
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")

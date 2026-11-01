@@ -53,7 +53,6 @@ TOOL_LABELS = {
     "test_withdrawal_plan": "Testing withdrawal plan",
     "inspect_document": "Inspecting document",
     "summarize_spending": "Summarizing spending",
-    "read_pdf_text": "Reading PDF",
     "get_quote": "Fetching quotes",
     "get_fund_profile": "Looking up fund",
     "get_historical_return": "Fetching historical returns",

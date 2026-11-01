@@ -21,6 +21,15 @@ is that a custom middleware whose ``.name`` matches a default replaces that
 default in place -- which is exactly how the filesystem narrowing and the
 finance summary prompt work, and exactly why ``test_agent.py`` pins the
 resulting tool set and summarizer.
+
+Subagents -- one of our own beside deepagents' ``general-purpose``. The
+``document-reader`` is the only agent that reads PDF text, and it has no other
+tool: text an uploaded statement carries never reaches an agent that can write
+to ``/AGENTS.md`` or ``/workspace/``. The main agent gets the reader's answer,
+which is still document-derived and treated as data. The library writes to the
+shared backend for an agent whatever tools it has -- offloaded tool results,
+summarized history -- so the quarantine covers what deepagents writes, not just
+what the reader can call.
 """
 
 from __future__ import annotations
@@ -28,12 +37,12 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-from deepagents import FilesystemMiddleware, create_deep_agent
+from deepagents import FilesystemMiddleware, SubAgent, create_deep_agent
 from deepagents._models import resolve_model
 from deepagents.backends import FilesystemBackend
 from deepagents.middleware.filesystem import FilesystemPermission
 from deepagents.middleware.summarization import create_summarization_middleware
-from langchain.agents.middleware import TodoListMiddleware
+from langchain.agents.middleware import AgentMiddleware, TodoListMiddleware
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -43,14 +52,22 @@ from financial_planner.config import (
     ANTHROPIC_EFFORT,
     CHECKPOINT_DB,
     DEFAULT_MODEL,
+    READER_MODEL,
     THINKING_BINDING_BETA,
     THINKING_BINDING_MODELS,
     VIRTUAL_MEMORY,
     VIRTUAL_SKILLS,
+    anthropic_model_name,
     ensure_directories,
 )
-from financial_planner.prompts import FINANCE_SUMMARY_PROMPT, SYSTEM_PROMPT
-from financial_planner.tools import ALL_TOOLS
+from financial_planner.prompts import (
+    DOCUMENT_READER_DESCRIPTION,
+    DOCUMENT_READER_PROMPT,
+    FINANCE_SUMMARY_PROMPT,
+    SYSTEM_PROMPT,
+)
+from financial_planner.tools import ALL_TOOLS, READER_TOOLS
+from financial_planner.tools.documents import DOCUMENT_READER
 
 DEFAULT_PROFILE = """\
 # Household profile
@@ -90,6 +107,28 @@ PDF_READ_DENY = FilesystemPermission(
 )
 
 
+class _NoFilesystem(AgentMiddleware):
+    """Takes the place of FilesystemMiddleware in the document-reader, by name.
+
+    A declarative subagent gets a fresh FilesystemMiddleware with every tool --
+    write_file, edit_file, delete and execute among them -- and the only way to
+    change that is to replace it by name. A narrowed real one will not do:
+    deepagents refuses a FilesystemMiddleware without `read_file`, which on a
+    PDF hands over the whole document, past every check read_pdf_text makes.
+    The reader needs no filesystem at all, since the `task` description names
+    the file. Removing the middleware also removes its eviction, which would
+    otherwise write an oversized read_pdf_text result -- raw PDF text -- to
+    /large_tool_results/, where the main agent's read_file can open it.
+
+    Matching is by name, so an upstream rename fails open, back to the full
+    default set; TestDocumentReaderIsQuarantined pins the reader's exact tools.
+    """
+
+    @property
+    def name(self) -> str:
+        return FilesystemMiddleware.__name__
+
+
 def _ensure_profile() -> None:
     """Create AGENTS.md if absent.
 
@@ -115,18 +154,7 @@ def build_checkpointer() -> SqliteSaver:
     return saver
 
 
-def _anthropic_model_name(spec: str) -> str | None:
-    """The bare Claude model name in ``spec``, or ``None`` if it is not Anthropic's.
-
-    Mirrors init_chat_model's inference: an unprefixed ``claude-...`` is Anthropic.
-    """
-    provider, _, name = spec.rpartition(":")
-    if provider == "anthropic" or (not provider and name.startswith("claude")):
-        return name
-    return None
-
-
-def build_model(spec: str) -> BaseChatModel:
+def build_model(spec: str, *, effort: str | None = ANTHROPIC_EFFORT) -> BaseChatModel:
     """Turn a provider-prefixed model string into the chat model the agent runs on.
 
     Anthropic models get an explicit effort, and the ones that run preserved
@@ -138,13 +166,16 @@ def build_model(spec: str) -> BaseChatModel:
     renders thinking, so a summary of it would only make saved conversations
     bigger.
 
+    ``effort=None`` leaves the model at its own default effort, which is how the
+    document-reader runs.
+
     Every other provider is resolved as deepagents would resolve the string,
     since these kwargs are Anthropic's and would break, say, an ``openai:`` model.
     """
-    name = _anthropic_model_name(spec)
+    name = anthropic_model_name(spec)
     if name is None:
         return resolve_model(spec)
-    kwargs: dict[str, Any] = {"effort": ANTHROPIC_EFFORT}
+    kwargs: dict[str, Any] = {} if effort is None else {"effort": effort}
     if name in THINKING_BINDING_MODELS:
         kwargs["thinking"] = {
             "type": "adaptive",
@@ -158,6 +189,7 @@ def build_model(spec: str) -> BaseChatModel:
 def build_agent(
     *,
     model: str | BaseChatModel = DEFAULT_MODEL,
+    reader_model: str | BaseChatModel = READER_MODEL,
     checkpointer: Any | None = None,
 ) -> Any:
     """Construct the financial planning deep agent.
@@ -165,6 +197,8 @@ def build_agent(
     Args:
         model: A provider-prefixed model string (default: ``config.DEFAULT_MODEL``),
             built by ``build_model``, or an instantiated chat model used as is.
+        reader_model: The same, for the document-reader subagent (default:
+            ``config.READER_MODEL``), built at the model's own default effort.
         checkpointer: Optional checkpointer. One is created if not supplied;
             pass a shared instance from the UI layer so it survives reruns.
 
@@ -184,6 +218,33 @@ def build_agent(
     # real chat model is ever built behind a test's back.
     if isinstance(model, str):
         model = build_model(model)
+    if isinstance(reader_model, str):
+        reader_model = build_model(reader_model, effort=None)
+
+    # The only agent that reads PDF text, so the only one that must not be able
+    # to act on it. Every capability is spelled out, because a declarative
+    # subagent inherits by omission: with no `tools` it would get every main
+    # tool, and it gets a *fresh* default FilesystemMiddleware -- write_file,
+    # edit_file, delete and execute included -- not the narrowed one below.
+    #
+    # _NoFilesystem replaces that default and leaves it no filesystem tools
+    # and no result eviction; its docstring says why. MAX_PDF_CHARS kept
+    # read_pdf_text far below the eviction limit anyway, but that margin was a
+    # coincidence a later edit would silently remove. An oversized result now
+    # stays in the reader's own context, which MAX_PDF_CHARS bounds.
+    #
+    # No skills, no memory, no `mode="fork"`: a fork would inherit the main
+    # agent's conversation and middleware, which is the opposite of a
+    # quarantine. The reader's output is still document-derived; see
+    # SYSTEM_PROMPT's "# Untrusted content".
+    document_reader: SubAgent = {
+        "name": DOCUMENT_READER,
+        "description": DOCUMENT_READER_DESCRIPTION,
+        "system_prompt": DOCUMENT_READER_PROMPT,
+        "model": reader_model,
+        "tools": READER_TOOLS,
+        "middleware": [_NoFilesystem()],
+    }
 
     return create_deep_agent(
         model=model,
@@ -192,6 +253,7 @@ def build_agent(
         backend=backend,
         skills=[VIRTUAL_SKILLS],
         memory=[VIRTUAL_MEMORY],
+        subagents=[document_reader],
         middleware=[
             # Narrows the built-in filesystem tools. Matched by `.name`, this
             # *replaces* the FilesystemMiddleware create_deep_agent would have
