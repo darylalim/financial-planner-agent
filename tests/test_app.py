@@ -461,3 +461,74 @@ class TestStartupGuard:
         """st.stop() must prevent a chat box that cannot possibly work."""
         monkeypatch.setattr("financial_planner.config.ANTHROPIC_API_KEY", None, raising=False)
         assert len(_run().chat_input) == 0
+
+
+@pytest.fixture
+def sent(monkeypatch, tmp_path):
+    """Run turns offline and record the text each one sent the agent.
+
+    The workspace is a throwaway one holding a single statement, so a listing
+    has something to name.
+    """
+    from financial_planner import agent as agent_module
+    from financial_planner import config as config_module
+    from financial_planner import streaming as streaming_module
+
+    monkeypatch.setattr(config_module, "WORKSPACE_DIR", tmp_path)
+    (tmp_path / "statement-sept.pdf").write_bytes(b"%PDF-1.4\n")
+    monkeypatch.setattr(agent_module, "build_agent", lambda **_: object())
+    monkeypatch.setattr(agent_module, "build_checkpointer", lambda: None)
+    texts: list[str] = []
+
+    def _record(_agent, messages, _config):
+        texts.append(messages[-1]["content"])
+        return iter([streaming_module.Token("Done.")])
+
+    monkeypatch.setattr(streaming_module, "stream_agent_events", _record)
+    return texts
+
+
+class TestTheAgentIsToldWhatIsOnFile:
+    """The agent's filesystem denies every read of a PDF, ls and glob included,
+    so a statement uploaded in an earlier conversation is invisible to it. The
+    app names what is on file instead: at a conversation's start, and whenever
+    something is uploaded -- never on other turns, which would only repeat it.
+    """
+
+    def test_the_first_message_carries_the_listing(self, with_api_key, sent):
+        app = _run()
+        app.pills[0].set_value(_raw_options(app)[0]).run()
+        [text] = sent
+        assert "Files on file in /workspace/" in text
+        assert '"/workspace/statement-sept.pdf"' in text
+
+    def test_a_later_message_without_an_upload_does_not(self, with_api_key, sent):
+        app = _run()
+        app.pills[0].set_value(_raw_options(app)[0]).run()
+        app.chat_input[0].set_value("And next month?").run()
+        assert len(sent) == 2
+        assert sent[1] == "And next month?"
+
+    def test_a_later_message_with_an_upload_does(self, with_api_key, sent, attach):
+        app = _run()
+        app.session_state["messages"] = [
+            {"role": "user", "content": "Earlier question"},
+            {"role": "assistant", "content": "Earlier answer"},
+        ]
+        attach("checking.csv", text="Here is checking too")
+        app.run()
+        [text] = sent
+        assert text.startswith("Here is checking too\n\nFiles on file")
+        assert '"/workspace/checking.csv" (uploaded with this message)' in text
+        # The earlier statement is listed too, and not as this turn's upload.
+        assert text.endswith('\n- "/workspace/statement-sept.pdf"')
+
+    def test_the_listing_is_not_shown_in_the_users_bubble(self, with_api_key, sent, attach):
+        """It is for the agent. The bubble keeps what the user typed, and the
+        attached names go in an escaped caption, as the sidebar's do."""
+        attach("a`b.csv", text="See attached")
+        app = _run()
+        user = app.session_state["messages"][0]
+        assert user["content"] == "See attached"
+        assert user["attachments"] == ["a`b.csv"]
+        assert "Files on file" not in "".join(m.value for m in app.markdown)

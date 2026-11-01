@@ -175,6 +175,12 @@ not earnings, so `savings_rate` is withheld rather than computed.
 
 **PDFs are readable, not aggregatable — and the refusal carries the route forward.**
 `summarize_spending` rejects PDFs; `inspect_document` and `read_pdf_text` accept them.
+The built-ins do not: `agent.PDF_READ_DENY` denies `read_file`, `ls`, `glob` and `grep`
+every PDF (else `read_file` hands over the whole document, scans included). It is
+spelled case-insensitively and for dotfiles because the matcher is neither, and since
+listings then hide PDFs, `app.py` names the files on file in the user's message on a
+conversation's first turn and on any upload turn. `TestTheMainAgentCannotReadPdfsDirectly`
+pins it by behaviour.
 The dead end is stated repeatedly on purpose, because the generic "unsupported format"
 message it replaced made the model retry with different column names. `_pdf_statement`
 composes **all five** runtime statements from shared clauses — `NotTabular`, `PdfLocked`,
