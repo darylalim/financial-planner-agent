@@ -515,9 +515,10 @@ workflow is safe on pull requests from forks. The live check is not part of it.
 
 The local gate is `.claude/hooks/`, which runs ruff on write and the full gate
 before a session ends, plus a guard that refuses edits to `.env`, the checkpoint
-database, `agent_home/AGENTS.md`, the three gitignored `agent_home/` directories,
-and `.claude/`'s own settings and hooks. `agent_home/skills/**` stays editable,
-since the skills are tracked and routinely changed. It catches things earlier but
+database, `.claude/`'s own settings and hooks, and everything under `agent_home/`
+except `skills/**` and `workspace/.gitkeep`, which are tracked and routinely changed.
+Like `.gitignore`, that part is an allowlist, so a folder a library starts writing
+later is covered without anyone having to list it. It catches things earlier but
 covers less: it skips when there is no `.venv`, arms only when a `.py` was
 written through Edit/Write,
 and runs only inside a Claude Code session on one machine. Run the three commands

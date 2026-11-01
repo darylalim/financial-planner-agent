@@ -261,10 +261,12 @@ structure is easy to skip, and skipping it is the common failure.
   PDF page by page, not by whichever one was sampled"), with a body explaining the defect,
   how it failed, and why the chosen fix is the right shape.
 - **`.claude/hooks/` gates local work**: ruff on write, the gate above before a session
-  ends, and a PreToolUse guard refusing Edit/Write to `.env`, `agent_home/AGENTS.md`,
-  `agent_home/{workspace,conversation_history,large_tool_results}/*`, the checkpoint DB,
-  and `.claude/settings.json` + `.claude/hooks/*`. `agent_home/skills/**`, `.env.example`
-  and `workspace/.gitkeep` stay editable — the skills are tracked and routinely edited.
+  ends, and a PreToolUse guard refusing Edit/Write to `.env`, the checkpoint DB,
+  `.claude/settings.json` + `.claude/hooks/*`, and everything under the agent's home except
+  `skills/**` and `workspace/.gitkeep`. That last part is an allowlist, like `.gitignore`'s,
+  so a runtime folder a library adds later is refused by default; it skips itself if the
+  home is the repo root or above, where it would refuse every edit. `.env.example` stays
+  editable.
   Bash is unmatched by design, so this is a tool-dispatch filter, not a boundary; it also
   skips without a `.venv` and arms only when Edit/Write touched a `.py`. Run the gate
   yourself when working outside those conditions.
@@ -308,10 +310,10 @@ passing tests are not enough on their own.
 - **Diff the licences** of all installed packages before and after (`importlib.metadata`),
   and stop at anything in the GPL family. `peewee` (pulled in by `yfinance`) ships no
   licence field; its repository says MIT.
-- **New runtime folders** under `agent_home/` are git-ignored by the allowlist, but
-  `.claude/hooks/guard-sensitive-paths.sh` lists folders by name. Ask the owner to add any
-  new one; `/blobs/` (written only with `offload_binary_content=True`, which the app does
-  not set) is not listed yet.
+- **New runtime folders** under `agent_home/` need no action: both the `.gitignore` and
+  the edit guard are allowlists. Still look for one after a live run
+  (`git status --short --ignored agent_home/`), because a new folder means the library
+  writes something new, and the quarantine has to cover what the library writes.
 
 ## Known limits
 
