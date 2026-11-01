@@ -13,13 +13,14 @@ Storage design -- two kinds of persistence, deliberately separated:
 * **Conversation and todo state** live in a SQLite checkpointer keyed by
   ``thread_id``, so an interrupted planning session resumes where it stopped.
 
-Middleware -- two deliberate departures from what ``create_deep_agent``
-assembles on its own. Both are passed through ``middleware=``, which is
+Middleware -- three deliberate departures from what ``create_deep_agent``
+assembles on its own. All three are passed through ``middleware=``, which is
 *additive*: it splices into the default stack rather than replacing it, so the
 skills and memory middleware configured below survive untouched. The one rule
 is that a custom middleware whose ``.name`` matches a default replaces that
-default in place -- which is exactly how the filesystem narrowing works, and
-exactly why ``test_agent.py`` pins the resulting tool set.
+default in place -- which is exactly how the filesystem narrowing and the
+finance summary prompt work, and exactly why ``test_agent.py`` pins the
+resulting tool set and summarizer.
 """
 
 from __future__ import annotations
@@ -28,19 +29,26 @@ import sqlite3
 from typing import Any
 
 from deepagents import FilesystemMiddleware, create_deep_agent
+from deepagents._models import resolve_model
 from deepagents.backends import FilesystemBackend
+from deepagents.middleware.summarization import create_summarization_middleware
 from langchain.agents.middleware import TodoListMiddleware
+from langchain.chat_models import init_chat_model
+from langchain_core.language_models import BaseChatModel
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from financial_planner.config import (
     AGENT_HOME,
+    ANTHROPIC_EFFORT,
     CHECKPOINT_DB,
     DEFAULT_MODEL,
+    THINKING_BINDING_BETA,
+    THINKING_BINDING_MODELS,
     VIRTUAL_MEMORY,
     VIRTUAL_SKILLS,
     ensure_directories,
 )
-from financial_planner.prompts import SYSTEM_PROMPT
+from financial_planner.prompts import FINANCE_SUMMARY_PROMPT, SYSTEM_PROMPT
 from financial_planner.tools import ALL_TOOLS
 
 DEFAULT_PROFILE = """\
@@ -92,16 +100,56 @@ def build_checkpointer() -> SqliteSaver:
     return saver
 
 
+def _anthropic_model_name(spec: str) -> str | None:
+    """The bare Claude model name in ``spec``, or ``None`` if it is not Anthropic's.
+
+    Mirrors init_chat_model's inference: an unprefixed ``claude-...`` is Anthropic.
+    """
+    provider, _, name = spec.rpartition(":")
+    if provider == "anthropic" or (not provider and name.startswith("claude")):
+        return name
+    return None
+
+
+def build_model(spec: str) -> BaseChatModel:
+    """Turn a provider-prefixed model string into the chat model the agent runs on.
+
+    Anthropic models get an explicit effort, and the ones that run preserved
+    thinking's history check also get ``drop_block`` (see
+    ``config.THINKING_BINDING_MODELS``). The whole ``thinking`` dict is sent, not
+    just ``block_binding``: ChatAnthropic adds its adaptive-thinking default only
+    when ``thinking`` is unset, so a dict holding only the binding would silently
+    turn adaptive thinking off. ``display: "omitted"`` because the app never
+    renders thinking, so a summary of it would only make saved conversations
+    bigger.
+
+    Every other provider is resolved as deepagents would resolve the string,
+    since these kwargs are Anthropic's and would break, say, an ``openai:`` model.
+    """
+    name = _anthropic_model_name(spec)
+    if name is None:
+        return resolve_model(spec)
+    kwargs: dict[str, Any] = {"effort": ANTHROPIC_EFFORT}
+    if name in THINKING_BINDING_MODELS:
+        kwargs["thinking"] = {
+            "type": "adaptive",
+            "display": "omitted",
+            "block_binding": {"prefix_mismatch_behavior": "drop_block"},
+        }
+        kwargs["betas"] = [THINKING_BINDING_BETA]
+    return init_chat_model(spec, **kwargs)
+
+
 def build_agent(
     *,
-    model: str | Any = DEFAULT_MODEL,
+    model: str | BaseChatModel = DEFAULT_MODEL,
     checkpointer: Any | None = None,
 ) -> Any:
     """Construct the financial planning deep agent.
 
     Args:
-        model: Provider-prefixed model string (``"anthropic:claude-opus-5"``) or
-            an instantiated chat model.
+        model: A provider-prefixed model string (default: ``config.DEFAULT_MODEL``),
+            built by ``build_model``, or an instantiated chat model used as is.
         checkpointer: Optional checkpointer. One is created if not supplied;
             pass a shared instance from the UI layer so it survives reruns.
 
@@ -114,6 +162,13 @@ def build_agent(
     # virtual_mode=True re-roots the agent at AGENT_HOME and blocks traversal
     # above it, so the repository's .env and source are outside its reach.
     backend = FilesystemBackend(root_dir=AGENT_HOME, virtual_mode=True)
+
+    # Resolved once, here, so the agent and its summarizer share one instance --
+    # and with it the effort and thinking settings. The summarizer factory also
+    # refuses a string. An injected test model passes straight through, so no
+    # real chat model is ever built behind a test's back.
+    if isinstance(model, str):
+        model = build_model(model)
 
     return create_deep_agent(
         model=model,
@@ -150,6 +205,15 @@ def build_agent(
             # tool went unbound. Brings its own `todos` state channel, which
             # the SQLite checkpointer then persists per thread.
             TodoListMiddleware(),
+            # Replaces the default summarizer in place, by name, to change only
+            # its prompt: the default is written for coding sessions and says
+            # nothing about keeping figures exact, and a figure misstated in a
+            # summary re-enters the conversation with no tool behind it. The
+            # `general-purpose` subagent inherits it through the same name
+            # match. Matching is by class name, so a rename -- or a subclass,
+            # whose name differs -- fails open to the default prompt;
+            # TestSummarizerIsFinanceAware pins both graphs.
+            create_summarization_middleware(model, backend, summary_prompt=FINANCE_SUMMARY_PROMPT),
         ],
         checkpointer=checkpointer if checkpointer is not None else build_checkpointer(),
         name="financial-planner",

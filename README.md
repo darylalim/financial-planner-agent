@@ -82,6 +82,37 @@ The rule extends to ratios: a `savings_rate` or a category's
 the model. The model can only obey that if a tool actually offers the number,
 which is why those keys exist.
 
+### The model
+
+The default is Claude Opus 5.5 (`config.DEFAULT_MODEL`), at effort `high`. The
+effort is set explicitly because Opus 5.5 defaults to `medium`, one level below
+Opus 5, so a bare model swap would quietly make the planner think less. The
+`general-purpose` subagent and the summarizer run on the same model instance, so
+they get the same settings.
+
+Two settings exist because long conversations get **summarized**. Deep Agents
+replaces old turns with a summary and keeps the newest ones verbatim:
+
+- **A finance-specific summary prompt** (`FINANCE_SUMMARY_PROMPT` in
+  `prompts.py`). The default is written for coding sessions and never asks for
+  figures to be kept exactly. A figure a summary drops or rewrites comes back
+  into the conversation with no tool behind it, which breaks the arithmetic rule.
+  The replacement keeps every amount, rate, date and term verbatim, attributes
+  each one to the tool that produced it, marks figures that came from a document
+  as the document's claim, and never computes.
+- **`drop_block` for thinking blocks.** Opus 5.5 ties each thinking block to the
+  exact conversation before it, and a summary rewrites that conversation. Accounts
+  created on or after 2026-08-31 get a 400 on the next turn. With
+  `prefix_mismatch_behavior: "drop_block"`, the API drops the stale blocks and the
+  turn goes ahead. It is sent only to models that run this check
+  (`config.THINKING_BINDING_MODELS`).
+
+To go back to Opus 5, set `FINANCIAL_PLANNER_MODEL=anthropic:claude-opus-5` in
+`.env`. The finance summary prompt stays. Opus 5 runs at effort `high`, its own
+default, and gets langchain's default thinking settings, because it does not run
+the check. Any other provider-prefixed model `init_chat_model` accepts works too.
+It gets none of the Anthropic-only settings.
+
 ### Reading the stream
 
 `streaming.py` looks small and has four traps in it. A run found the first three:
@@ -215,6 +246,14 @@ the home's name because the parent alone is not unique: `/data/homes/alice` and
 could resume the other's finances by thread id. Either way the database is a
 *sibling* of the home and never inside it, so the agent cannot read its own
 transcript.
+
+**The checkpoint database is not encrypted.** It holds every saved conversation
+in plain text: the household's figures, the documents' contents as the agent
+relayed them, and the model's thinking blocks. The agent cannot reach it, but
+anyone who can read the file can. Treat it like the statements themselves: keep
+it on an encrypted disk, include it in backups, and delete it to discard old
+conversations. Two hardening steps are **not done**: encrypting the database
+(SQLCipher, for example) and creating it with `0600` permissions.
 
 **`.streamlit/config.toml` is the other half of this boundary, and it is a whole
 file that can go missing.** Streamlit leaves `server.address` unset, and falls

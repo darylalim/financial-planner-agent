@@ -29,8 +29,16 @@ import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langgraph.checkpoint.memory import InMemorySaver
 
-from financial_planner.agent import build_agent
-from financial_planner.config import AGENT_HOME, CHECKPOINT_DB, DEFAULT_MODEL, PROJECT_ROOT
+from financial_planner.agent import _anthropic_model_name, build_agent, build_model
+from financial_planner.config import (
+    AGENT_HOME,
+    ANTHROPIC_EFFORT,
+    CHECKPOINT_DB,
+    DEFAULT_MODEL,
+    PROJECT_ROOT,
+    THINKING_BINDING_BETA,
+)
+from financial_planner.prompts import FINANCE_SUMMARY_PROMPT
 from financial_planner.tools import ALL_TOOLS
 
 # The filesystem tools build_agent asks for by name. `delete` and `execute` are
@@ -138,6 +146,182 @@ class TestSubagentInheritsTheNarrowedFilesystem:
         assert {t.name for t in ALL_TOOLS} <= subagent_tool_names(agent)
 
 
+def summarizers_by_agent(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[Any]]:
+    """Build the agent and return each graph's summarizers, keyed by agent name.
+
+    The middleware instances are not reachable from a compiled graph -- they
+    are folded into nested ``wrap_model_call`` closures -- so this records the
+    ``middleware=`` list deepagents hands ``create_agent`` for the main graph
+    and for each subagent, and calls through. That is the assembled stack
+    itself, after every name match has been applied.
+    """
+    import deepagents.graph
+    import deepagents.middleware.subagents
+
+    built: dict[str, list[Any]] = {}
+
+    def spy(real: Any) -> Any:
+        def create_agent(*args: Any, **kwargs: Any) -> Any:
+            built[kwargs.get("name") or "?"] = [
+                m for m in kwargs.get("middleware") or [] if m.name == "SummarizationMiddleware"
+            ]
+            return real(*args, **kwargs)
+
+        return create_agent
+
+    for module in (deepagents.graph, deepagents.middleware.subagents):
+        monkeypatch.setattr(module, "create_agent", spy(module.create_agent))
+    build_agent(model=ToolBindableFake(messages=iter([])), checkpointer=InMemorySaver())
+    return built
+
+
+class TestSummarizerIsFinanceAware:
+    """The default summary prompt is replaced by a name match, which fails open.
+
+    A summary replaces the turns it covers, so a figure it drops or rewrites
+    re-enters the conversation with no tool behind it. If the replacement stops
+    matching -- a rename upstream, or a subclass, whose name differs -- the
+    coding-session default comes back with no error, or the agent runs two
+    summarizers. The `general-purpose` subagent inherits the replacement through
+    a second name match, so it is pinned separately.
+    """
+
+    @pytest.mark.parametrize("graph", ["financial-planner", "general-purpose"])
+    def test_each_graph_has_one_summarizer_with_the_finance_prompt(
+        self, monkeypatch: pytest.MonkeyPatch, graph: str
+    ) -> None:
+        summarizers = summarizers_by_agent(monkeypatch)[graph]
+        assert len(summarizers) == 1
+        # deepagents wraps LangChain's middleware and keeps the prompt on it. A
+        # private attribute, but a rename raises here rather than passing.
+        assert summarizers[0]._lc_helper.summary_prompt == FINANCE_SUMMARY_PROMPT
+
+    def test_the_summarizer_shares_the_agents_model(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """So the effort and thinking settings reach summarization calls too."""
+        fake = ToolBindableFake(messages=iter([]))
+        import deepagents.graph
+
+        seen: list[Any] = []
+        real = deepagents.graph.create_agent
+
+        def create_agent(model: Any, *args: Any, **kwargs: Any) -> Any:
+            seen.extend(
+                m.model for m in kwargs["middleware"] if m.name == "SummarizationMiddleware"
+            )
+            return real(model, *args, **kwargs)
+
+        monkeypatch.setattr(deepagents.graph, "create_agent", create_agent)
+        build_agent(model=fake, checkpointer=InMemorySaver())
+        assert seen == [fake]
+
+
+class TestFinanceSummaryPrompt:
+    def test_it_keeps_deepagents_media_clause(self) -> None:
+        """Built from deepagents' prompt, not LangChain's, so offloaded media
+        references are still preserved across a summary."""
+        assert "<media_reference_information>" in FINANCE_SUMMARY_PROMPT
+
+    def test_it_requires_figures_verbatim_and_forbids_arithmetic(self) -> None:
+        assert "verbatim" in FINANCE_SUMMARY_PROMPT
+        assert "Never calculate, round, convert, total or combine figures" in (
+            FINANCE_SUMMARY_PROMPT
+        )
+
+    def test_the_rules_sit_before_the_messages_it_summarizes(self) -> None:
+        assert FINANCE_SUMMARY_PROMPT.index("<financial_figures>") < (
+            FINANCE_SUMMARY_PROMPT.index("<messages>")
+        )
+        assert FINANCE_SUMMARY_PROMPT.count("{messages}") == 1
+
+
+class TestModelSettings:
+    """``build_model`` sends Anthropic-only settings, and only to Anthropic.
+
+    Model construction is patched where ``financial_planner.agent`` looks it
+    up, so these record the arguments without building anything.
+    """
+
+    @pytest.fixture
+    def calls(self, monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str, dict[str, Any]]]:
+        import financial_planner.agent as agent_module
+
+        recorded: list[tuple[str, str, dict[str, Any]]] = []
+
+        def record(kind: str) -> Any:
+            def build(spec: str, **kwargs: Any) -> Any:
+                recorded.append((kind, spec, kwargs))
+                return ToolBindableFake(messages=iter([]))
+
+            return build
+
+        monkeypatch.setattr(agent_module, "init_chat_model", record("init"))
+        monkeypatch.setattr(agent_module, "resolve_model", record("resolve"))
+        return recorded
+
+    @pytest.mark.parametrize("spec", ["anthropic:claude-opus-5-5", "claude-sonnet-5-5"])
+    def test_a_checking_model_gets_drop_block(self, calls: list, spec: str) -> None:
+        """The whole `thinking` dict, not only `block_binding`.
+
+        ChatAnthropic adds adaptive thinking only when `thinking` is unset, so
+        a dict holding just the binding would switch adaptive thinking off.
+        """
+        build_model(spec)
+        [(kind, _, kwargs)] = calls
+        assert kind == "init"
+        assert kwargs == {
+            "effort": ANTHROPIC_EFFORT,
+            "thinking": {
+                "type": "adaptive",
+                "display": "omitted",
+                "block_binding": {"prefix_mismatch_behavior": "drop_block"},
+            },
+            "betas": [THINKING_BINDING_BETA],
+        }
+
+    def test_the_way_back_to_opus_5_sends_effort_only(self, calls: list) -> None:
+        """Opus 5 does not run the history check, so it keeps langchain's default."""
+        build_model("anthropic:claude-opus-5")
+        assert calls == [("init", "anthropic:claude-opus-5", {"effort": ANTHROPIC_EFFORT})]
+
+    def test_another_provider_gets_no_anthropic_settings(self, calls: list) -> None:
+        build_model("openai:gpt-5.4")
+        assert calls == [("resolve", "openai:gpt-5.4", {})]
+
+    def test_build_agent_resolves_a_model_name(self, calls: list) -> None:
+        """The summarizer factory raises TypeError on a string, so a name must be
+        built first -- once, for both the agent and its summarizer."""
+        build_agent(model="anthropic:claude-opus-5-5", checkpointer=InMemorySaver())
+        assert [spec for _, spec, _ in calls] == ["anthropic:claude-opus-5-5"]
+
+
+class TestNoRealModelIsBuiltInTests:
+    """With ``model=`` injected, ``build_agent`` builds no chat model of its own.
+
+    Keeps the "no API key, no network" promise now that ``build_agent`` builds
+    models itself. Patched where each name is looked up: deepagents.graph
+    imported ``resolve_model`` by name, so patching ``deepagents._models``
+    would change nothing.
+    """
+
+    def test_an_injected_model_is_used_as_is(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import deepagents.graph
+
+        import financial_planner.agent as agent_module
+
+        def refuse(name: str) -> Any:
+            def build(model: Any, *args: Any, **kwargs: Any) -> Any:  # noqa: ARG001
+                if isinstance(model, str):
+                    raise AssertionError(f"{name} built a real model from {model!r}")
+                return model
+
+            return build
+
+        monkeypatch.setattr(deepagents.graph, "resolve_model", refuse("deepagents.graph"))
+        monkeypatch.setattr(agent_module, "resolve_model", refuse("agent.resolve_model"))
+        monkeypatch.setattr(agent_module, "init_chat_model", refuse("agent.init_chat_model"))
+        build_agent(model=ToolBindableFake(messages=iter([])), checkpointer=InMemorySaver())
+
+
 class TestHarnessProfileAssumptions:
     """`build_agent` replaces FilesystemMiddleware and forwards only `backend`.
 
@@ -160,6 +344,9 @@ class TestHarnessProfileAssumptions:
 
     #: A spec no provider serves, for registering a profile of our own against.
     SENTINEL_SPEC = "fake-provider-for-tests:sentinel-model"
+    #: A Claude name no model has, for the instance path, which reads the
+    #: provider and name off a real ChatAnthropic rather than off a spec.
+    SENTINEL_CLAUDE = "claude-sentinel-for-tests"
 
     @staticmethod
     def _profile(spec: str) -> Any:
@@ -204,13 +391,14 @@ class TestHarnessProfileAssumptions:
 
         harness_profiles._ensure_harness_profiles_loaded()
         snapshot = dict(harness_profiles._HARNESS_PROFILES)
-        register_harness_profile(
-            self.SENTINEL_SPEC,
-            HarnessProfile(
-                tool_description_overrides={"read_file": "sentinel"},
-                excluded_tools=frozenset({"edit_file"}),
-            ),
-        )
+        for spec in (self.SENTINEL_SPEC, f"anthropic:{self.SENTINEL_CLAUDE}"):
+            register_harness_profile(
+                spec,
+                HarnessProfile(
+                    tool_description_overrides={"read_file": "sentinel"},
+                    excluded_tools=frozenset({"edit_file"}),
+                ),
+            )
         yield
         harness_profiles._HARNESS_PROFILES.clear()
         harness_profiles._HARNESS_PROFILES.update(snapshot)
@@ -230,6 +418,44 @@ class TestHarnessProfileAssumptions:
         through the same call is what keeps that from going quiet again.
         """
         profile = self._profile(self.SENTINEL_SPEC)
+        assert dict(profile.tool_description_overrides) == {"read_file": "sentinel"}
+        assert set(profile.excluded_tools) == {"edit_file"}
+
+    # -- The instance path ---------------------------------------------------
+    # build_agent now hands create_deep_agent a built model, never a string, so
+    # deepagents gets `_model_spec=None` and finds the profile by introspecting
+    # the instance instead (provider from `_get_ls_params`, name from
+    # `.model`). That is the path the app takes; the spec checks above no
+    # longer describe it on their own.
+
+    @staticmethod
+    def _instance_profile(model: Any) -> Any:
+        from deepagents.graph import _harness_profile_for_model
+
+        return _harness_profile_for_model(model, None)
+
+    def test_the_configured_model_instance_has_no_profile_overrides_to_drop(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Built by ``build_model`` exactly as the app builds it.
+
+        A ChatAnthropic is built but never called, so a placeholder key is
+        enough; nothing reaches the network. Other providers are skipped for
+        the reason ``_profile`` gives.
+        """
+        if _anthropic_model_name(DEFAULT_MODEL) is None:
+            pytest.skip("FINANCIAL_PLANNER_MODEL is not an Anthropic model")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-placeholder-for-tests")
+        profile = self._instance_profile(build_model(DEFAULT_MODEL))
+        assert dict(profile.tool_description_overrides) == {}
+        assert set(profile.excluded_tools) == set()
+
+    def test_the_instance_guard_is_not_vacuous(self, sentinel_profile: Any) -> None:
+        """Introspection has to reach the registry, or the test above is ``{} == {}``."""
+        from langchain_anthropic import ChatAnthropic
+
+        model = ChatAnthropic(model=self.SENTINEL_CLAUDE, api_key="sk-ant-placeholder")
+        profile = self._instance_profile(model)
         assert dict(profile.tool_description_overrides) == {"read_file": "sentinel"}
         assert set(profile.excluded_tools) == {"edit_file"}
 
