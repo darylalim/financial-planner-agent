@@ -48,7 +48,9 @@ $100k salary is $250/month and materially changes the result.
 
 Take `final_balance_nominal` from step 2 into `test_withdrawal_plan`:
 
-- `annual_withdrawal` = retirement spending − Social Security and other income
+- `monthly_withdrawal` or `annual_withdrawal` = retirement spending − Social
+  Security and other income, in the unit the user gave it. Never convert
+  monthly to annual yourself; the tool takes either and returns both
 - Inflate today's-dollar spending to the retirement year first, or use
   `final_balance_real` and today's spending. Never mix a nominal balance with
   today's-dollar spending; that error overstates readiness by decades of

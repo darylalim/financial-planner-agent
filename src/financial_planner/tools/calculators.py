@@ -139,7 +139,9 @@ def plan_debt_payoff(
             clearing individual debts sooner, which many people stick to better.
 
     Returns:
-        JSON with months_to_debt_free, total_interest_paid, and payoff_order.
+        JSON with months_to_debt_free, total_interest_paid, payoff_order,
+        total_minimum_payments, and extra_beyond_minimums (the budget left
+        after the minimums, aimed at the target debt).
     """
     try:
         return ok(
@@ -154,9 +156,10 @@ def plan_debt_payoff(
 @tool
 def test_withdrawal_plan(
     portfolio_value: float,
-    annual_withdrawal: float,
     years: int,
     annual_return: float,
+    annual_withdrawal: float | None = None,
+    monthly_withdrawal: float | None = None,
     annual_inflation: float = 0.025,
 ) -> str:
     """Test whether a portfolio survives a given inflation-adjusted drawdown.
@@ -171,22 +174,27 @@ def test_withdrawal_plan(
 
     Args:
         portfolio_value: Portfolio value at retirement, in dollars.
-        annual_withdrawal: First-year withdrawal in dollars; grows with inflation.
         years: Length of retirement to test.
         annual_return: Expected annual return as a DECIMAL (0.05 = 5%).
+        annual_withdrawal: First-year withdrawal per year, in dollars; grows
+            with inflation. Give this OR monthly_withdrawal, not both.
+        monthly_withdrawal: First-year withdrawal per month, in dollars. Pass a
+            monthly figure as is -- do not multiply it by 12 yourself.
         annual_inflation: Annual inflation as a decimal. Defaults to 0.025.
 
     Returns:
         JSON with survives_horizon, depleted_in_year, ending_balance,
-        initial_withdrawal_rate, a yearly path, and a caveat to relay.
+        initial_withdrawal_rate, the first-year withdrawal both annually and
+        monthly, a yearly path, and a caveat to relay.
     """
     try:
         return ok(
             finance.withdrawal_sustainability(
                 portfolio_value=portfolio_value,
-                annual_withdrawal=annual_withdrawal,
                 years=years,
                 annual_return=annual_return,
+                annual_withdrawal=annual_withdrawal,
+                monthly_withdrawal=monthly_withdrawal,
                 annual_inflation=annual_inflation,
             )
         )

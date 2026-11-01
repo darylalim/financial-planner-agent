@@ -295,6 +295,11 @@ class DebtPayoffResult:
     months_to_debt_free: int
     total_interest_paid: float
     payoff_order: list[dict] = field(default_factory=list)
+    # The split every answer about the plan describes: what the minimums take,
+    # and what is left to aim at the target debt. Returned so the model never
+    # sums the minimums or subtracts them from the budget itself.
+    total_minimum_payments: float = 0.0
+    extra_beyond_minimums: float = 0.0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -423,15 +428,18 @@ def payoff_debts(
         months_to_debt_free=month,
         total_interest_paid=round(total_interest, 2),
         payoff_order=order,
+        total_minimum_payments=round(total_minimum, 2),
+        extra_beyond_minimums=round(monthly_budget - total_minimum, 2),
     )
 
 
 def withdrawal_sustainability(
     *,
     portfolio_value: float,
-    annual_withdrawal: float,
     years: int,
     annual_return: float,
+    annual_withdrawal: float | None = None,
+    monthly_withdrawal: float | None = None,
     annual_inflation: float = 0.025,
 ) -> dict:
     """Test whether a portfolio survives a given inflation-adjusted drawdown.
@@ -441,7 +449,18 @@ def withdrawal_sustainability(
     retirement -- a portfolio that survives this test can still fail in practice
     if poor returns land in the first few years. Treat the result as a
     necessary condition, not a sufficient one.
+
+    Takes the first-year withdrawal as exactly one of ``annual_withdrawal`` or
+    ``monthly_withdrawal``, and returns both. People state retirement spending
+    per month; an annual-only input made the model multiply by twelve itself
+    and quote the product, a figure no tool had produced.
     """
+    if (annual_withdrawal is None) == (monthly_withdrawal is None):
+        raise ValueError("give exactly one of annual_withdrawal or monthly_withdrawal")
+    if monthly_withdrawal is not None:
+        _check_non_negative("monthly_withdrawal", monthly_withdrawal)
+        annual_withdrawal = monthly_withdrawal * 12
+    assert annual_withdrawal is not None
     _check_non_negative("portfolio_value", portfolio_value)
     _check_non_negative("annual_withdrawal", annual_withdrawal)
     _check_rate("annual_return", annual_return)
@@ -472,6 +491,8 @@ def withdrawal_sustainability(
         "depleted_in_year": depleted_year,
         "ending_balance": round(balance, 2),
         "initial_withdrawal_rate": round(initial_rate, 4),
+        "first_year_annual_withdrawal": round(annual_withdrawal, 2),
+        "first_year_monthly_withdrawal": round(annual_withdrawal / 12, 2),
         "yearly_path": path,
         "caveat": (
             "Deterministic single-path projection. Ignores sequence-of-returns "
