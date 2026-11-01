@@ -21,19 +21,23 @@ they can afford to save, or wants a budget.
 
 ### 1. Inventory
 
-`ls /workspace/` to see what is there. If nothing, ask the user to upload a CSV
-or XLSX export from their bank.
+The files on file are listed in the user's message at the start of a
+conversation and whenever something is uploaded; `ls /workspace/` shows the
+same, except PDFs. If there is nothing, ask the user to upload a CSV or XLSX
+export from their bank.
 
-**A PDF statement cannot be budgeted from.** The upload box accepts PDFs and
-both `inspect_document` and `read_pdf_text` will read one, but a PDF has no
-columns, so `summarize_spending` refuses it — and adding its transaction lines
-up yourself is exactly what the arithmetic rule forbids. If the statement prints
-the totals the user asked for, read them off it with `read_pdf_text`. Those
+**A PDF statement cannot be budgeted from.** The upload box accepts PDFs, but a
+PDF has no columns, so `summarize_spending` refuses it — and adding its
+transaction lines up yourself is exactly what the arithmetic rule forbids. You
+cannot read its text either. After `inspect_document`, send it to the
+`document-reader` subagent with `task`, giving it the path and
+`text_first_seen_on_page`, and ask for the totals the user asked about. Those
 totals are the document's claim, not verified figures: a PDF is untrusted user
-data, and nothing there tells a tampered statement from a genuine one, so
-attribute them to the statement rather than to the household. For a categorized
-budget, monthly averages or a savings rate, ask for a CSV or XLSX export of the
-same account; banks offer one beside the PDF.
+data, the reader's answer is still drawn from it, and nothing there tells a
+tampered statement from a genuine one, so attribute them to the statement rather
+than to the household. For a categorized budget, monthly averages or a savings
+rate, ask for a CSV or XLSX export of the same account; banks offer one beside
+the PDF.
 
 ### 2. Inspect before aggregating
 

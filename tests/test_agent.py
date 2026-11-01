@@ -29,17 +29,20 @@ import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langgraph.checkpoint.memory import InMemorySaver
 
-from financial_planner.agent import _anthropic_model_name, build_agent, build_model
+from financial_planner.agent import build_agent, build_model
 from financial_planner.config import (
     AGENT_HOME,
     ANTHROPIC_EFFORT,
     CHECKPOINT_DB,
     DEFAULT_MODEL,
     PROJECT_ROOT,
+    READER_MODEL,
     THINKING_BINDING_BETA,
+    anthropic_model_name,
 )
 from financial_planner.prompts import FINANCE_SUMMARY_PROMPT
 from financial_planner.tools import ALL_TOOLS
+from financial_planner.tools.documents import DOCUMENT_READER
 
 # The filesystem tools build_agent asks for by name. `delete` and `execute` are
 # deliberately absent -- see the middleware list in agent.py.
@@ -56,12 +59,33 @@ HARNESS_TOOLS = {
 
 WITHHELD_TOOLS = {"delete", "execute"}
 
+# Everything the document-reader may call. Exact: it is the agent that reads
+# untrusted PDF text, so anything else it could call is a way to act on it.
+READER_TOOL_NAMES = {"read_pdf_text"}
+
 
 class ToolBindableFake(GenericFakeChatModel):
     """Fake model that accepts tool binding; Deep Agents always binds built-ins."""
 
     def bind_tools(self, tools: Any, **kwargs: Any) -> Any:  # noqa: ARG002 - parity only
         return self
+
+
+def fake() -> ToolBindableFake:
+    return ToolBindableFake(messages=iter([]))
+
+
+def build_fake_agent(**kwargs: Any) -> Any:
+    """``build_agent`` with both models injected, so no chat model is built.
+
+    Both, because ``reader_model`` defaults to a model *name*: a call passing
+    only ``model=`` would build a real Sonnet client, which needs a key that
+    CI does not have.
+    """
+    kwargs.setdefault("model", fake())
+    kwargs.setdefault("reader_model", fake())
+    kwargs.setdefault("checkpointer", InMemorySaver())
+    return build_agent(**kwargs)
 
 
 @pytest.fixture(scope="module")
@@ -73,7 +97,7 @@ def agent() -> Any:
     now lands beside conftest's throwaway home rather than in the repo, but a
     composition test has no business creating a database at all.
     """
-    return build_agent(model=ToolBindableFake(messages=iter([])), checkpointer=InMemorySaver())
+    return build_fake_agent()
 
 
 def bound_tools(agent: Any) -> dict[str, Any]:
@@ -114,6 +138,15 @@ class TestBoundTools:
         """Catches tools arriving from a library upgrade as well as leaving."""
         assert bound_tool_names(agent) == {t.name for t in ALL_TOOLS} | HARNESS_TOOLS
 
+    def test_the_main_agent_cannot_read_pdf_text(self, agent: Any) -> None:
+        """The quarantine. The main agent can write -- to /AGENTS.md, the memory
+        every later session loads -- so a PDF's text reaching it is one injected
+        instruction away from a poisoned profile. Only the document-reader,
+        which cannot write, reads it. By name, so the exact-set assertion above
+        being edited to match cannot quietly let it back.
+        """
+        assert "read_pdf_text" not in bound_tool_names(agent)
+
 
 def subagent_tools(agent: Any, name: str = "general-purpose") -> dict[str, Any]:
     """Reach the bound tools of the compiled subagent hanging off the `task` tool.
@@ -153,91 +186,98 @@ class TestSubagentInheritsTheNarrowedFilesystem:
     def test_the_subagent_can_still_do_the_finance_work(self, agent: Any) -> None:
         assert {t.name for t in ALL_TOOLS} <= subagent_tool_names(agent)
 
+    def test_the_subagent_cannot_read_pdf_text(self, agent: Any) -> None:
+        """It inherits the main tool list and can write, so a PDF reader left
+        in that list would be a way around the quarantine."""
+        assert "read_pdf_text" not in subagent_tool_names(agent)
 
-def _run_tool(tool: Any, **args: Any) -> str:
-    """Call a bound built-in the way its tool node would, and return its text.
 
-    The filesystem tools take an injected runtime; theirs reads nothing from it
-    but the call id, so a bare one is enough to drive the real code path.
-    """
-    from langchain.tools import ToolRuntime
+def subagent_graph(agent: Any, name: str) -> Any:
+    task = agent.nodes["tools"].bound._tools_by_name["task"]
+    cells = dict(zip(task.func.__code__.co_freevars, task.func.__closure__, strict=True))
+    return cells["subagent_graphs"].cell_contents[name]
 
-    runtime = ToolRuntime(
-        state={"messages": []},
-        context=None,
-        config={},
-        stream_writer=lambda *_: None,
-        tool_call_id="test-call",
-        store=None,
+
+def run_reader(pdf_text: str, monkeypatch: pytest.MonkeyPatch | None = None) -> Any:
+    """Run the document-reader graph on a one-page PDF, driven by a fake model
+    that calls read_pdf_text once and then answers. Returns the final state."""
+    from langchain_core.messages import AIMessage, HumanMessage
+    from test_documents import _pdf_bytes
+
+    from financial_planner.config import WORKSPACE_DIR, ensure_directories
+
+    ensure_directories()
+    path = WORKSPACE_DIR / "_pytest-reader.pdf"
+    path.write_bytes(_pdf_bytes(pdf_text))
+    call = {"name": "read_pdf_text", "args": {"path": "/workspace/_pytest-reader.pdf"}, "id": "r1"}
+    reader = ToolBindableFake(
+        messages=iter([AIMessage(content="", tool_calls=[call]), AIMessage(content="{}")])
     )
-    out = tool.func(runtime=runtime, **args)
-    return str(getattr(out, "content", out))
+    try:
+        graph = subagent_graph(build_fake_agent(reader_model=reader), DOCUMENT_READER)
+        return graph.invoke({"messages": [HumanMessage("Read /workspace/_pytest-reader.pdf")]})
+    finally:
+        path.unlink(missing_ok=True)
 
 
-class TestTheMainAgentCannotReadPdfsDirectly:
-    """`read_file` on a PDF hands the model the whole document as a document
-    block, scanned pages included, past every check the PDF tools make.
+class TestDocumentReaderIsQuarantined:
+    """The one agent that reads PDF text, so the one that must not act on it.
 
-    Pinned by behaviour, not by the `permissions=` argument: the rule is passed
-    to a middleware that replaces deepagents' own by name, and a library change
-    that stops honouring it would leave the argument in place and the path open.
+    deepagents gives a declared subagent every main tool when its spec has no
+    `tools`, and a *fresh* FilesystemMiddleware -- write_file, edit_file,
+    delete and execute included -- rather than the narrowed one. Both have to
+    be overridden in the spec, and both fail open.
     """
 
-    PHRASE = "PDF-ONLY PHRASE 7731"
+    def test_its_bound_set_is_exactly_reading(self, agent: Any) -> None:
+        """Exact, like TestBoundTools, so an upgrade that adds a tool fails
+        loudly. No filesystem tool at all, and no `task` to delegate onward."""
+        assert subagent_tool_names(agent, DOCUMENT_READER) == READER_TOOL_NAMES
 
-    @pytest.fixture
-    def pdfs(self) -> Any:
-        from test_documents import _pdf_bytes
+    def test_it_runs_with_no_filesystem_middleware(self) -> None:
+        """_NoFilesystem takes a slot deepagents' own stack expects to hold a
+        real FilesystemMiddleware, so a graph that builds is not enough: this
+        runs a whole reader turn, tool call and answer."""
+        messages = run_reader("Total purchases 1,234.56")["messages"]
+        assert "1,234.56" in messages[2].content
+        assert messages[-1].content == "{}"
 
-        from financial_planner.config import WORKSPACE_DIR, ensure_directories
 
-        ensure_directories()
-        # Upper case is the trap: deepagents lowercases an extension to decide a
-        # file is a PDF, but matches permissions case-sensitively. The dotfile
-        # is the other: the matcher's `*` skips a leading dot.
-        names = ["_pytest-direct.pdf", "_pytest-Direct.PDF", "._pytest-hidden.pdf"]
-        for name in names:
-            (WORKSPACE_DIR / name).write_bytes(_pdf_bytes(self.PHRASE))
-        control = WORKSPACE_DIR / "_pytest-direct.csv"
-        control.write_text(f"Note\n{self.PHRASE}\n", encoding="utf-8")
-        yield [f"/workspace/{n}" for n in names]
-        for name in names:
-            (WORKSPACE_DIR / name).unlink(missing_ok=True)
-        control.unlink(missing_ok=True)
+class TestTheReaderNeverOffloads:
+    """deepagents writes a tool result over its token limit to
+    /large_tool_results/ -- for the reader, raw PDF text, in a folder the main
+    agent's read_file can open. MAX_PDF_CHARS keeps read_pdf_text far below the
+    limit today; the reader having no FilesystemMiddleware, and so no eviction,
+    makes that a property of the reader rather than a margin.
+    """
 
-    @pytest.mark.parametrize("graph", ["main", "general-purpose"])
-    def test_read_file_is_denied(self, agent: Any, pdfs: list[str], graph: str) -> None:
-        """The general-purpose subagent inherits the rule by name match, so it
-        is driven separately: it has `read_file` too."""
-        tools = bound_tools(agent) if graph == "main" else subagent_tools(agent)
-        for path in pdfs:
-            out = _run_tool(tools["read_file"], file_path=path)
-            assert "permission denied" in out, (path, out)
-            assert self.PHRASE not in out
-
-    def test_grep_on_the_pdf_itself_is_denied(self, agent: Any, pdfs: list[str]) -> None:
-        """On the file's own path. Pointed at a directory, grep filters denied
-        files out of its results silently, so it would pass without showing
-        that the rule fired."""
-        for path in pdfs:
-            out = _run_tool(bound_tools(agent)["grep"], pattern="PHRASE", path=path)
-            assert "permission denied" in out, (path, out)
-
-    @pytest.mark.parametrize(
-        "tool, args", [("ls", {"path": "/workspace"}), ("glob", {"pattern": "**/*"})]
-    )
-    def test_listings_leave_pdfs_out(
-        self, agent: Any, pdfs: list[str], tool: str, args: dict[str, Any]
+    def test_an_oversized_result_stays_in_the_readers_context(
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """What app.py's file listing exists to make up for. The CSV is the
-        control: a listing that came back empty would pass the first half."""
-        out = _run_tool(bound_tools(agent)[tool], **args)
-        assert not any(path in out for path in pdfs), out
-        assert "/workspace/_pytest-direct.csv" in out
+        """By behaviour: lift the cap, read a PDF holding ~3x the default
+        eviction limit, and check the text came back inline and nothing
+        reached disk."""
+        import financial_planner.tools.documents as documents
 
-    def test_other_documents_stay_readable(self, agent: Any, pdfs: list[str]) -> None:  # noqa: ARG002
-        out = _run_tool(bound_tools(agent)["read_file"], file_path="/workspace/_pytest-direct.csv")
-        assert self.PHRASE in out
+        monkeypatch.setattr(documents, "MAX_PDF_CHARS", 10**7)
+        text = "TOTAL " * 40_000  # 240k chars; eviction is 20k tokens of 4 chars
+        offloaded = AGENT_HOME / "large_tool_results"
+        before = set(offloaded.iterdir()) if offloaded.exists() else set()
+
+        messages = run_reader(text)["messages"]
+        assert len(messages[2].content) > 200_000
+        after = set(offloaded.iterdir()) if offloaded.exists() else set()
+        assert after == before
+
+    def test_the_default_would_have_offloaded_it(self) -> None:
+        """The control: what the reader would have got without _NoFilesystem
+        does evict, so the test above is not passing because nothing does."""
+        from deepagents import FilesystemMiddleware
+        from deepagents.backends import FilesystemBackend
+
+        default = FilesystemMiddleware(backend=FilesystemBackend(root_dir=AGENT_HOME))
+        assert default._tool_token_limit_before_evict is not None
+        assert default._tool_token_limit_before_evict * 4 < 240_000
 
 
 def summarizers_by_agent(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[Any]]:
@@ -265,7 +305,7 @@ def summarizers_by_agent(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[Any]
 
     for module in (deepagents.graph, deepagents.middleware.subagents):
         monkeypatch.setattr(module, "create_agent", spy(module.create_agent))
-    build_agent(model=ToolBindableFake(messages=iter([])), checkpointer=InMemorySaver())
+    build_fake_agent()
     return built
 
 
@@ -292,21 +332,21 @@ class TestSummarizerIsFinanceAware:
 
     def test_the_summarizer_shares_the_agents_model(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """So the effort and thinking settings reach summarization calls too."""
-        fake = ToolBindableFake(messages=iter([]))
+        model = fake()
         import deepagents.graph
 
         seen: list[Any] = []
         real = deepagents.graph.create_agent
 
-        def create_agent(model: Any, *args: Any, **kwargs: Any) -> Any:
+        def create_agent(graph_model: Any, *args: Any, **kwargs: Any) -> Any:
             seen.extend(
                 m.model for m in kwargs["middleware"] if m.name == "SummarizationMiddleware"
             )
-            return real(model, *args, **kwargs)
+            return real(graph_model, *args, **kwargs)
 
         monkeypatch.setattr(deepagents.graph, "create_agent", create_agent)
-        build_agent(model=fake, checkpointer=InMemorySaver())
-        assert seen == [fake]
+        build_fake_agent(model=model)
+        assert seen == [model]
 
 
 class TestFinanceSummaryPrompt:
@@ -384,12 +424,67 @@ class TestModelSettings:
     def test_build_agent_resolves_a_model_name(self, calls: list) -> None:
         """The summarizer factory raises TypeError on a string, so a name must be
         built first -- once, for both the agent and its summarizer."""
-        build_agent(model="anthropic:claude-opus-5-5", checkpointer=InMemorySaver())
+        build_agent(
+            model="anthropic:claude-opus-5-5", reader_model=fake(), checkpointer=InMemorySaver()
+        )
         assert [spec for _, spec, _ in calls] == ["anthropic:claude-opus-5-5"]
+
+    def test_the_reader_is_built_from_reader_model_at_default_effort(self, calls: list) -> None:
+        """Not injected, the reader comes from config.READER_MODEL. Sonnet 5.5
+        runs the history check, so it gets drop_block like the main model, but
+        no effort: it stays at the model's own default."""
+        build_agent(model=fake(), checkpointer=InMemorySaver())
+        [(kind, spec, kwargs)] = calls
+        assert spec == READER_MODEL
+        assert "effort" not in kwargs
+        if anthropic_model_name(READER_MODEL) == "claude-sonnet-5-5":
+            assert kwargs["thinking"]["block_binding"] == {"prefix_mismatch_behavior": "drop_block"}
+
+
+class TestReaderModelDefault:
+    """``config`` reads the environment at import, and conftest fixes it for the
+    whole session, so each case runs in a subprocess with its own environment
+    -- not ``importlib.reload``, which would leave other modules holding the old
+    values and leak into later tests.
+    """
+
+    @staticmethod
+    def _reader_model(**env: str) -> str:
+        base = {k: v for k, v in os.environ.items() if not k.startswith("FINANCIAL_PLANNER_")}
+        base["FINANCIAL_PLANNER_HOME"] = os.environ["FINANCIAL_PLANNER_HOME"]
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from financial_planner.config import READER_MODEL; print(READER_MODEL)",
+            ],
+            capture_output=True,
+            text=True,
+            env={**base, **env},
+            cwd=PROJECT_ROOT,
+            timeout=120,
+        )
+        assert result.returncode == 0, result.stderr
+        return result.stdout.strip()
+
+    def test_an_anthropic_main_model_pairs_with_sonnet(self) -> None:
+        assert self._reader_model() == "anthropic:claude-sonnet-5-5"
+
+    def test_another_provider_is_reused_rather_than_needing_an_anthropic_key(self) -> None:
+        assert self._reader_model(FINANCIAL_PLANNER_MODEL="openai:gpt-5.4") == "openai:gpt-5.4"
+
+    def test_an_explicit_reader_model_wins(self) -> None:
+        assert (
+            self._reader_model(
+                FINANCIAL_PLANNER_MODEL="openai:gpt-5.4",
+                FINANCIAL_PLANNER_READER_MODEL="anthropic:claude-haiku-5-5",
+            )
+            == "anthropic:claude-haiku-5-5"
+        )
 
 
 class TestNoRealModelIsBuiltInTests:
-    """With ``model=`` injected, ``build_agent`` builds no chat model of its own.
+    """With both models injected, ``build_agent`` builds no chat model of its own.
 
     Keeps the "no API key, no network" promise now that ``build_agent`` builds
     models itself. Patched where each name is looked up: deepagents.graph
@@ -413,7 +508,7 @@ class TestNoRealModelIsBuiltInTests:
         monkeypatch.setattr(deepagents.graph, "resolve_model", refuse("deepagents.graph"))
         monkeypatch.setattr(agent_module, "resolve_model", refuse("agent.resolve_model"))
         monkeypatch.setattr(agent_module, "init_chat_model", refuse("agent.init_chat_model"))
-        build_agent(model=ToolBindableFake(messages=iter([])), checkpointer=InMemorySaver())
+        build_fake_agent()
 
 
 class TestHarnessProfileAssumptions:
@@ -497,8 +592,11 @@ class TestHarnessProfileAssumptions:
         harness_profiles._HARNESS_PROFILES.clear()
         harness_profiles._HARNESS_PROFILES.update(snapshot)
 
-    def test_the_configured_model_has_no_profile_overrides_to_drop(self) -> None:
-        profile = self._profile(DEFAULT_MODEL)
+    @pytest.mark.parametrize("spec", [DEFAULT_MODEL, READER_MODEL])
+    def test_the_configured_model_has_no_profile_overrides_to_drop(self, spec: str) -> None:
+        """The reader replaces its FilesystemMiddleware by name too, so its
+        model rests on the same assumption."""
+        profile = self._profile(spec)
         assert dict(profile.tool_description_overrides) == {}
         assert set(profile.excluded_tools) == set()
 
@@ -528,8 +626,9 @@ class TestHarnessProfileAssumptions:
 
         return _harness_profile_for_model(model, None)
 
+    @pytest.mark.parametrize("spec", [DEFAULT_MODEL, READER_MODEL])
     def test_the_configured_model_instance_has_no_profile_overrides_to_drop(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, spec: str
     ) -> None:
         """Built by ``build_model`` exactly as the app builds it.
 
@@ -537,10 +636,10 @@ class TestHarnessProfileAssumptions:
         enough; nothing reaches the network. Other providers are skipped for
         the reason ``_profile`` gives.
         """
-        if _anthropic_model_name(DEFAULT_MODEL) is None:
-            pytest.skip("FINANCIAL_PLANNER_MODEL is not an Anthropic model")
+        if anthropic_model_name(spec) is None:
+            pytest.skip(f"{spec} is not an Anthropic model")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-placeholder-for-tests")
-        profile = self._instance_profile(build_model(DEFAULT_MODEL))
+        profile = self._instance_profile(build_model(spec))
         assert dict(profile.tool_description_overrides) == {}
         assert set(profile.excluded_tools) == set()
 
