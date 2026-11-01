@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from financial_planner.tools import ALL_TOOLS
+from financial_planner.tools import ALL_TOOLS, READER_TOOLS
 
 _PATH = Path(__file__).resolve().parents[1] / "scripts" / "answer_checks.py"
 _spec = importlib.util.spec_from_file_location("answer_checks", _PATH)
@@ -107,8 +107,12 @@ class TestProvenance:
 
 class TestExpectedTools:
     def test_every_expected_tool_exists(self):
-        """A misspelled name would fail the scenario on every run, forever."""
-        names = {tool.name for tool in ALL_TOOLS}
+        """A misspelled name would fail the scenario on every run, forever.
+
+        Any agent's tools count -- the reader's included -- plus `task`, the
+        harness's delegation tool, which the pdf scenarios require.
+        """
+        names = {tool.name for tool in [*ALL_TOOLS, *READER_TOOLS]} | {"task"}
         for scenario, expected in checks.EXPECTED_TOOLS.items():
             assert expected <= names, scenario
 
