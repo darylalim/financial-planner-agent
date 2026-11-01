@@ -27,9 +27,13 @@ PDFs are accepted too, but for *reading* only — a budget needs columns. See
 
 `.streamlit/config.toml` binds the app to loopback — provided you run that exact
 command from the repository root, and pass no `--server.address` of your own. It
-is a whole file that can go missing without breaking anything, which is why
+is a whole file that can go missing without breaking the app, which is why
 [Storage and the security boundary](#storage-and-the-security-boundary) spends a
 paragraph on it.
+
+The same file carries the theme: matching light and dark modes, switched under
+**Settings** in the app's menu. It loads no web fonts, so opening the app tells no
+font host about it.
 
 ## How it's put together
 
@@ -321,8 +325,10 @@ reach it: they all assume the attacker arrived inside an uploaded document, not
 over TCP. `allowedHosts` is
 pinned beside `address` because an empty list accepts any `Host` header, so a
 hostile page that resolves its own name to `127.0.0.1` would reach a
-loopback-bound app as same-origin. Deleting the file breaks nothing and prints no
-warning; a Network URL simply reappears.
+loopback-bound app as same-origin. Deleting the file breaks nothing at runtime and
+prints no warning; a Network URL simply reappears. Only the gate notices:
+`TestStreamlitConfig` in `tests/test_app.py` pins both server settings, along with
+the theme's two modes, its no-web-fonts rule and its WCAG AA contrast.
 
 ### Skills
 
