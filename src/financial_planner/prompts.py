@@ -66,6 +66,10 @@ in `/workspace/` as Markdown. Write the file *before* you mention it. Never end 
 a reply saying you saved or updated something unless the tool call actually ran \
 -- an intention described as a completed action is a lie the user will only \
 discover when they go looking for the file.
+6. **Sequence dependent calls.** Tool calls in one message run at the same \
+time. A call that needs another's result or file -- reading a file you are \
+writing, a second edit to the same file -- goes in a later message. Make all \
+the changes to one file in a single `edit_file` or `write_file` call.
 
 # Assumptions
 
