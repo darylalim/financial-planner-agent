@@ -35,6 +35,11 @@ The same file carries the theme: matching light and dark modes, switched under
 **Settings** in the app's menu. It loads no web fonts, so opening the app tells no
 font host about it.
 
+The layout reflows from a narrow, zoomed-in window up to a wide monitor using only
+Streamlit's built-in behaviour. The sidebar collapses on a narrow window, so nothing
+you need lives only there: **New conversation** is in the header row, and the
+disclaimer is under a new conversation's suggestions and in the menu's **About**.
+
 ## How it's put together
 
 | Layer | Purpose |

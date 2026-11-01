@@ -388,6 +388,21 @@ class TestMemoryKeepsADocumentsFiguresAttributed:
         assert "If you do record one" in text
 
 
+class TestTablesFitANarrowWindow:
+    """The server never learns the window width, so a markdown table the agent
+    writes cannot reflow to it. The prompt caps its width instead."""
+
+    def test_the_communicating_section_caps_table_columns(self) -> None:
+        from financial_planner.prompts import SYSTEM_PROMPT
+
+        section = SYSTEM_PROMPT[SYSTEM_PROMPT.index("# Communicating") :]
+        text = " ".join(section.split())
+        assert "at most four columns" in text
+        # Conditional, for the reason the memory rule above is: an imperative
+        # "use at most four columns" would read as an instruction to tabulate.
+        assert "If you do use a table" in text
+
+
 class TestModelSettings:
     """``build_model`` sends Anthropic-only settings, and only to Anthropic.
 

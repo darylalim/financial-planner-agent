@@ -79,10 +79,31 @@ SUGGESTIONS = {
     ),
 }
 
+# Shown in the sidebar, in the empty conversation and in the app menu's About:
+# the sidebar starts collapsed on a narrow window, so it cannot be the only
+# place. One constant so the three cannot drift apart.
+DISCLAIMER = (
+    "Educational planning support, not licensed financial advice. "
+    "Your documents stay on this machine; excerpts are sent to the model "
+    "when the agent reads them."
+)
+
 st.set_page_config(
     page_title="Financial planner",
     page_icon=":material/account_balance:",
+    # "centered" is deliberate, not a default nobody changed. This is a chat
+    # made of prose, and line length is what keeps it readable: "wide" would
+    # run an answer to 150+ characters a line on a 1920 px monitor, and nothing
+    # here (no charts, no dataframes) needs the room. The margins on a wide
+    # screen are the design working.
     layout="centered",
+    # Open on a wide window, collapsed to an overlay on a narrow one. Nothing
+    # the user needs lives only in the sidebar, so collapsing it hides nothing.
+    initial_sidebar_state="auto",
+    # The menu sits top-right at every width, so the disclaimer is always one
+    # click away. The other two items point at Streamlit's own help and issue
+    # tracker, which are not this app's.
+    menu_items={"About": DISCLAIMER, "Get help": None, "Report a bug": None},
 )
 
 
@@ -118,6 +139,18 @@ def new_thread_id() -> str:
     return f"session-{stamp}-{_uuid.uuid4().hex[:8]}"
 
 
+def on_file_hint(count: int) -> str:
+    """Say what is on file in the empty conversation, where the sidebar may be hidden.
+
+    A count, never a filename: names are browser-supplied and would need
+    escape_markdown, as the sidebar's do, and the list itself is the sidebar's job.
+    """
+    if count == 0:
+        return "Attach a statement with the :material/add: in the chat box to get started."
+    noun = "document" if count == 1 else "documents"
+    return f"{count} {noun} on file, listed in the sidebar."
+
+
 def _show_attachments(names) -> None:
     """Caption the files a user message carried.
 
@@ -141,19 +174,10 @@ if "thread_id" not in st.session_state:
 if "unsaved_uploads" not in st.session_state:
     st.session_state.unsaved_uploads = []
 
+documents = workspace_documents(WORKSPACE_DIR)
+
 with st.sidebar:
-    st.subheader("Financial planner")
-    st.caption(f"Model: `{DEFAULT_MODEL}`")
-
-    if st.button("New conversation", icon=":material/add_comment:", width="stretch"):
-        st.session_state.messages = []
-        st.session_state.thread_id = new_thread_id()
-        st.session_state.unsaved_uploads = []
-        st.rerun()
-
-    st.divider()
     st.markdown("**Your documents**")
-    documents = workspace_documents(WORKSPACE_DIR)
     if documents:
         for name in documents:
             # escape_markdown, for the reason the upload warning below gives:
@@ -166,13 +190,28 @@ with st.sidebar:
         st.caption("No documents yet. Attach one in the chat box below.")
 
     st.divider()
-    st.caption(
-        "Educational planning support, not licensed financial advice. "
-        "Your documents stay on this machine; excerpts are sent to the model "
-        "when the agent reads them."
-    )
+    st.caption(DISCLAIMER)
+    st.caption(f"Model: `{DEFAULT_MODEL}`")
 
-st.title("Financial planner")
+# The header row, in the main area because the sidebar starts collapsed on a
+# narrow window and "New conversation" must not hide behind it. wrap=True lets
+# the button drop under the title rather than squeeze it when there is no room.
+#
+# The button stays live while a turn streams, as it was in the sidebar. A click
+# then is a rerun request delivered inside the streaming loop, and that is safe
+# for the reason the reserved reply below gives -- do not wrap it in an except.
+with st.container(
+    horizontal=True,
+    wrap=True,
+    vertical_alignment="center",
+    horizontal_alignment="distribute",
+):
+    st.title("Financial planner", width="content")
+    if st.button("New conversation", icon=":material/add_comment:", width="content"):
+        st.session_state.messages = []
+        st.session_state.thread_id = new_thread_id()
+        st.session_state.unsaved_uploads = []
+        st.rerun()
 
 missing = missing_required_keys()
 if missing:
@@ -207,10 +246,16 @@ for message in st.session_state.messages:
 # replayed after a st.rerun(). That round trip deadlocks: st.rerun() aborts the
 # script before the stash can be read, and on the next run the pills widget
 # still holds the same selection, so it stashes and reruns again forever.
+#
+# The caption under them is the main area's copy of what the sidebar holds,
+# since a narrow window starts with the sidebar collapsed. It shares the chips'
+# slot so that unmounting them before a turn takes it too.
 picked: str | None = None
 suggestions_slot = st.empty()
 if not st.session_state.messages:
-    picked = suggestions_slot.pills("Try asking:", list(SUGGESTIONS), label_visibility="collapsed")
+    with suggestions_slot.container():
+        picked = st.pills("Try asking:", list(SUGGESTIONS), label_visibility="collapsed")
+        st.caption(f"{on_file_hint(len(documents))} {DISCLAIMER}")
 
 prompt = st.chat_input(
     "Ask about your finances, or attach a statement",
