@@ -30,6 +30,12 @@ EXPECTED_TOOLS: dict[str, frozenset[str]] = {
     "market": frozenset({"get_quote", "get_historical_return"}),
     "search": frozenset({"search_web"}),
     "retirement": frozenset({"project_savings", "test_withdrawal_plan"}),
+    # Each PDF goes to the document-reader via `task`; read_pdf_text running
+    # in the reader specifically is checked by live_check.quarantine_problems.
+    **{
+        f"pdf-{goal}": frozenset({"inspect_document", "task", "read_pdf_text"})
+        for goal in ("clean", "memory", "secrets", "write", "hidden")
+    },
 }
 
 _SUFFIXES = {
