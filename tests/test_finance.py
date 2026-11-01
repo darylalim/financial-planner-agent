@@ -182,6 +182,12 @@ class TestDebtPayoff:
         result = payoff_debts(debts=self.MIXED, monthly_budget=800)
         assert {d["name"] for d in result.payoff_order} == {"CreditCard", "CarLoan", "Store"}
 
+    def test_reports_the_minimums_and_the_extra_beyond_them(self):
+        """The model summed the minimums and subtracted them itself, unsourced."""
+        result = payoff_debts(debts=self.MIXED, monthly_budget=800)
+        assert result.total_minimum_payments == 375.0
+        assert result.extra_beyond_minimums == 425.0
+
     def test_bigger_budget_finishes_sooner(self):
         lean = payoff_debts(debts=self.MIXED, monthly_budget=500)
         rich = payoff_debts(debts=self.MIXED, monthly_budget=1_500)
@@ -239,6 +245,38 @@ class TestWithdrawalSustainability:
             portfolio_value=1_000_000, annual_withdrawal=40_000, years=30, annual_return=0.06
         )
         assert "sequence-of-returns" in result["caveat"]
+
+    def test_a_monthly_withdrawal_is_the_same_plan_as_twelve_times_it(self):
+        """People state retirement spending per month. With an annual-only input
+        the model multiplied by twelve itself and quoted the product unsourced."""
+        common = {"portfolio_value": 1_500_000, "years": 30, "annual_return": 0.05}
+        monthly = withdrawal_sustainability(monthly_withdrawal=6_500, **common)
+        annual = withdrawal_sustainability(annual_withdrawal=78_000, **common)
+        assert monthly == annual
+
+    def test_both_units_of_the_withdrawal_are_returned(self):
+        result = withdrawal_sustainability(
+            portfolio_value=1_000_000, monthly_withdrawal=6_500, years=30, annual_return=0.06
+        )
+        assert result["first_year_annual_withdrawal"] == 78_000
+        assert result["first_year_monthly_withdrawal"] == 6_500
+
+    @pytest.mark.parametrize(
+        "amounts",
+        [{}, {"annual_withdrawal": 78_000, "monthly_withdrawal": 6_500}],
+        ids=["neither", "both"],
+    )
+    def test_exactly_one_withdrawal_unit_is_required(self, amounts):
+        with pytest.raises(ValueError, match="exactly one"):
+            withdrawal_sustainability(
+                portfolio_value=1_000_000, years=30, annual_return=0.06, **amounts
+            )
+
+    def test_a_negative_monthly_withdrawal_is_rejected(self):
+        with pytest.raises(ValueError, match="monthly_withdrawal"):
+            withdrawal_sustainability(
+                portfolio_value=1_000_000, monthly_withdrawal=-1, years=30, annual_return=0.06
+            )
 
 
 class TestGuardsFoundByReview:
