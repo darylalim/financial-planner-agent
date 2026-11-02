@@ -381,6 +381,40 @@ class TestHistoricalReturn:
         assert result["caveat"]
         assert "total return" in result["basis"]
 
+    def test_realized_swings_come_from_the_series(self, monkeypatch):
+        """The after-fix batch's "swings of 20-30%" was read off an 18%
+        volatility. The tool now returns what actually happened instead."""
+        # Month-end closes over two years: up to 120, down to 84, back to 105.
+        closes = [100, 105, 110, 115, 120, 114, 108, 102, 96, 90, 84, 87]
+        closes += [90, 93, 96, 99, 102, 105, 105, 105, 105, 105, 105, 105, 105]
+        frame = pd.DataFrame(
+            {"Close": [float(c) for c in closes]},
+            index=pd.date_range("2020-01-31", periods=len(closes), freq="ME"),
+        )
+        install(monkeypatch, lambda s: FakeTicker(s, history=frame))
+        result = call(get_historical_return, ticker="VTI", years=2)
+
+        # 120 -> 84 is the deepest fall.
+        assert result["max_drawdown"] == pytest.approx(84 / 120 - 1, abs=1e-4)
+        twelve = [b / a - 1 for a, b in zip(closes, closes[12:], strict=False)]
+        assert result["worst_12_month_return"] == pytest.approx(min(twelve), abs=1e-4)
+        assert result["best_12_month_return"] == pytest.approx(max(twelve), abs=1e-4)
+
+    def test_under_a_year_has_no_12_month_return(self, monkeypatch):
+        install(monkeypatch, lambda s: FakeTicker(s, history=price_history(100.0, 90.0, days=200)))
+        result = call(get_historical_return, ticker="VTI", years=1)
+        assert result["worst_12_month_return"] is None
+        assert result["best_12_month_return"] is None
+        assert result["max_drawdown"] == pytest.approx(-0.10, abs=1e-4)
+
+    def test_the_description_names_the_swing_keys_and_forbids_a_range(self):
+        description = " ".join(get_historical_return.description.split())
+        for key in ("worst_12_month_return", "best_12_month_return", "max_drawdown"):
+            assert key in description
+        # Conditional, like the prompt's rules: an order would read as one to do it.
+        assert "If you say how much it swings" in description
+        assert "never turn the volatility into a range" in description
+
     @pytest.mark.parametrize("years", [0, 26, -1])
     def test_the_lookback_window_is_bounded(self, monkeypatch, years):
         install(
