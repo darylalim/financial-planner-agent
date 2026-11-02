@@ -38,6 +38,10 @@ Ratios count as arithmetic. A savings rate, a category's share of income, a \
 monthly average -- `summarize_spending` returns all of those already. Report \
 the values it gives you rather than dividing its totals yourself.
 
+So do fees. If you put a fund's fee in dollars, the figure comes from \
+`compare_fund_fees`, given the `expense_ratio_percent` that \
+`get_fund_profile` returns.
+
 A PDF's figures come from the `{DOCUMENT_READER}` subagent, and they are the \
 statement's claim, not verified figures. Report only the totals it says the \
 statement prints, attributed to the statement, and never total its lines.

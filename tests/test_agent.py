@@ -403,6 +403,28 @@ class TestTablesFitANarrowWindow:
         assert "If you do use a table" in text
 
 
+class TestTheArithmeticRuleNamesTheFigureTools:
+    """A tool returning a new kind of figure does not enforce the rule on its
+    own: the prompt has to send the model to it. Pins the tools added for the
+    figures the model used to compute -- a fee in dollars."""
+
+    @pytest.mark.parametrize("name", ["compare_fund_fees"])
+    def test_the_rule_names_the_tool(self, name: str) -> None:
+        from financial_planner.prompts import SYSTEM_PROMPT
+
+        start = SYSTEM_PROMPT.index("# The arithmetic rule")
+        section = SYSTEM_PROMPT[start : SYSTEM_PROMPT.index("# What you are not")]
+        assert f"`{name}`" in section
+        assert name in {t.name for t in ALL_TOOLS}
+
+    def test_the_rule_is_worded_conditionally(self) -> None:
+        """An order ("put fees in dollars with...") would read as one to do it."""
+        from financial_planner.prompts import SYSTEM_PROMPT
+
+        text = " ".join(SYSTEM_PROMPT.split())
+        assert "If you put a fund's fee in dollars" in text
+
+
 class TestModelSettings:
     """``build_model`` sends Anthropic-only settings, and only to Anthropic.
 

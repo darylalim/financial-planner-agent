@@ -51,6 +51,7 @@ TOOL_LABELS = {
     "loan_payment": "Calculating loan payment",
     "plan_debt_payoff": "Simulating debt payoff",
     "test_withdrawal_plan": "Testing withdrawal plan",
+    "compare_fund_fees": "Comparing fund fees",
     "inspect_document": "Inspecting document",
     "summarize_spending": "Summarizing spending",
     "get_quote": "Fetching quotes",

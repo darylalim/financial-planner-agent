@@ -357,11 +357,12 @@ analysis goes wrong.
 | `loan_payment` | Mortgage/auto/student payment and lifetime interest |
 | `plan_debt_payoff` | Multi-debt simulation, avalanche or snowball |
 | `test_withdrawal_plan` | Retirement drawdown sustainability |
+| `compare_fund_fees` | What one expense ratio costs against another, in dollars over time |
 | `inspect_document` | Schema and preview of a CSV/XLSX; the structure, never the text, of a PDF |
 | `summarize_spending` | Aggregate a CSV/XLSX export by category and month, with savings rate and monthly averages |
 | `read_pdf_text` | Extract a page range from a PDF. **Document-reader only**: the main agent cannot call it |
 | `get_quote` | Current prices for one or more symbols |
-| `get_fund_profile` | Expense ratio and category |
+| `get_fund_profile` | Expense ratio (as a percentage, whichever scale the provider used) and category |
 | `get_historical_return` | Realized annualized return over the elapsed calendar span, and volatility scaled by the series' own bar rate |
 | `search_web` | Current rates, limits and rules (Tavily) |
 
