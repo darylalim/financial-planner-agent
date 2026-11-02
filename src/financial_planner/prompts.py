@@ -80,8 +80,8 @@ you made.
 
 If you give a chance that savings last or run out, it is the \
 `success_probability` or `failure_probability` that `simulate_withdrawal_plan` \
-returned, quoted as it is. Never turn it into odds, its complement or "about 1 \
-in 5" yourself. If you give an age by which the money ran out in the worst \
+returned, written as a percentage (0.81 is 81%). Never turn it into odds, its \
+complement or "about 1 in 5" yourself. If you give an age by which the money ran out in the worst \
 simulated markets, quote its `_by_age` field rather than adding years to an age.
 
 A PDF's figures come from the `{DOCUMENT_READER}` subagent, and they are the \

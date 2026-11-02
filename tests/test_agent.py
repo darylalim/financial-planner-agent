@@ -446,6 +446,8 @@ class TestTheArithmeticRuleNamesTheFigureTools:
 
         text = " ".join(SYSTEM_PROMPT.split())
         assert "`failure_probability`" in text
+        # "Quoted as it is" put a bare 0.49 in a live answer's table.
+        assert "written as a percentage (0.81 is 81%)" in text
         assert 'Never turn it into odds, its complement or "about 1 in 5" yourself' in text
 
     def test_each_volatility_is_stated_beside_its_return(self) -> None:
