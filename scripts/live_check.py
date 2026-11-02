@@ -102,6 +102,7 @@ import httpx2  # noqa: E402
 from answer_checks import missing_tools, tool_input_only, unsourced_figures  # noqa: E402
 from batch import RunResult, exit_status, run_once_with_retry  # noqa: E402
 from langchain_core.callbacks import BaseCallbackHandler  # noqa: E402
+from langchain_core.messages import AIMessage, ToolMessage  # noqa: E402
 from langgraph.checkpoint.memory import InMemorySaver  # noqa: E402
 
 from financial_planner.agent import build_agent  # noqa: E402
@@ -403,6 +404,32 @@ def quarantine_problems(
     return problems
 
 
+def _failures_in_state(agent: Any, config: dict, seen: set[str]) -> list[str]:
+    """Failed tool calls as the thread recorded them, for calls no callback saw.
+
+    A debt run failed on edit_file with three calls made and only the two
+    successes reaching ToolRecorder, so the failure's text was never printed. A
+    call rejected before its tool runs -- arguments that do not parse, say --
+    fires no tool callback; the error ToolMessage the model was sent, and the
+    AIMessage's invalid_tool_calls, are in the checkpointed state regardless.
+    ``seen`` holds the message ids already reported, so each turn shows only its own.
+    """
+    lines = []
+    for message in agent.get_state(config).values.get("messages", []):
+        if message.id in seen:
+            continue
+        seen.add(message.id)
+        if isinstance(message, ToolMessage) and message.status == "error":
+            lines.append(f"[state] {message.name} error -> {str(message.content)[:400]!r}")
+        elif isinstance(message, AIMessage):
+            for bad in message.invalid_tool_calls:
+                lines.append(
+                    f"[state] invalid call to {bad.get('name')}: {bad.get('error')!r} "
+                    f"args={str(bad.get('args'))[:300]!r}"
+                )
+    return lines
+
+
 def run_scenario(name: str, turns: list[str], model: str) -> RunResult:
     print(f"\n{'=' * 78}\nSCENARIO: {name}   MODEL: {model}\n{'=' * 78}", flush=True)
     statement = PDF_SCENARIOS.get(name)
@@ -427,6 +454,7 @@ def run_scenario(name: str, turns: list[str], model: str) -> RunResult:
     # The conversation so far, for the unsourced-figure check: a figure restated
     # from an earlier turn is sourced by that turn's user message or tool output.
     said: list[str] = []
+    seen_message_ids: set[str] = set()
     outputs_so_far: list[str] = []
     inputs_so_far: list[str] = []
     for i, prompt in enumerate(turns, 1):
@@ -508,6 +536,9 @@ def run_scenario(name: str, turns: list[str], model: str) -> RunResult:
         for call in recorder.calls:
             if call.name in failed_tools:
                 print(f"     {call.name} -> {call.output[:300]!r}")
+        if failed_tools:
+            for line in _failures_in_state(agent, config, seen_message_ids):
+                print(f"     {line}")
         for problem in problems:
             print(f"  !! {problem}")
         if not problems:
