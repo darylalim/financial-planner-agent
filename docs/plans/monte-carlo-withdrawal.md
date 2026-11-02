@@ -19,7 +19,7 @@ context. This block is all that session needs to get going.
 
 | Phase | Goal | Depends on | Version | Paid runs (est. model time) | Status |
 |---|---|---|---|---|---|
-| 1 | A seeded Monte Carlo tool, its prompt rule and its tests | — | 0.8.0 (new tool) | ~4 min: one `retirement` shakedown, one 1-run batch over every scenario | not started |
+| 1 | A seeded Monte Carlo tool, its prompt rule and its tests | — | 0.8.0 (new tool) | ~4 min (actual ~7: a `retirement` shakedown, whose bare "0.49" reworded the probability rule; one 1-run batch over all 11 scenarios, 10 clean, `retirement`'s one unsourced figure an invented Social Security example, not a tool gap; a resume of a thread saved on `main`) | PR #21 |
 | 2 | `retirement-readiness` reports the probability; the live check expects the tool | 1 | 0.8.1 (skill change) | ~12 min: a shakedown, `retirement --repeat 3`, one 3-run batch over every scenario | not started |
 
 Status values: `not started` / `in progress (<branch>)` / `PR #<n>` / `merged`. Set
