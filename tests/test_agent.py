@@ -879,3 +879,19 @@ class TestLiveCheckRefusesAVacuousRun:
         # scenario found problems", and nothing ran here.
         assert result.returncode == 2, result.stdout + result.stderr
         assert "Cannot run" in result.stdout
+
+
+class TestVersionHasOneSource:
+    """``__version__`` sat at 0.1.1 through seven releases: ``uv version`` bumps
+    ``pyproject.toml`` and ``uv.lock`` but never a literal in ``__init__.py``.
+    It is now read from the installed distribution; this pins it to the file a
+    release is cut from."""
+
+    def test_it_matches_pyproject(self) -> None:
+        import tomllib
+
+        import financial_planner
+
+        pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+        declared = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]["version"]
+        assert financial_planner.__version__ == declared
