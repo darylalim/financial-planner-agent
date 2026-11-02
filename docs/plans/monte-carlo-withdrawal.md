@@ -60,7 +60,8 @@ the PR's last commit · status table updated in the same PR.
 - `get_historical_return` returns `annualized_volatility` over a 1–25 year window, using
   live yfinance data.
 - `prompts.PROMPT_DEFAULT_PERCENTS` holds the 7% / 4% / 2.5% / 10% defaults the checker
-  accepts. The prompt states no volatility default.
+  accepts. The prompt states no volatility default and no balanced-portfolio return. The
+  skill's 5% conservative rate exists only in the skill's prose.
 - `answer_checks.EXPECTED_TOOLS["retirement"]` is `{project_savings, test_withdrawal_plan}`.
 - The retirement skill tests the drawdown once per projection (step 3), and relays
   the sequence-of-returns caveat "in your own words" (step 5).
@@ -113,11 +114,39 @@ the PR's last commit · status table updated in the same PR.
      assumptions to state.
    - First-year withdrawal annual and monthly, and the initial withdrawal rate, as
      `test_withdrawal_plan` returns them, so either tool can be quoted alone.
-8. **Volatility gets a stated default, held in `prompts.py` constants, and added to
-   `PROMPT_DEFAULT_PERCENTS`.** Recommended: 15% for diversified equity and 5% for bonds.
-   **The owner confirms the numbers before Phase 1 starts.** If the user names a
-   holding, `annual_volatility` comes from `get_historical_return` on that holding. A
-   default changes only in `prompts.py`, never in the prompt's prose (`CLAUDE.md`).
+8. **Volatility defaults come in pairs with a return default, and a balanced pair is
+   added: 18% for diversified equity (7% return), 5% for bonds (4%), 11% for a balanced
+   portfolio (5%).** In a simulation, the median return and the volatility only make
+   sense together. A pair that mixes asset classes describes a portfolio that doesn't
+   exist. The skill's drawdown runs at 5%, which matches neither the equity nor the bond
+   default, so without a balanced pair the model would make up a volatility in between,
+   and the live check would rightly fail it. All six values are `prompts.py` constants
+   in `PROMPT_DEFAULT_PERCENTS`. The skill's 5% becomes the balanced return default
+   instead of a number in its prose. A default changes only in `prompts.py`
+   (`CLAUDE.md`). If the user names a holding, `annual_volatility` comes from
+   `get_historical_return` on that holding.
+
+   The numbers come from measurements, rounded so the conservative side wins (more
+   volatility). Taken on 2026-11-02 with `get_historical_return`'s method (`vol`,
+   daily returns annualized) and the spread of calendar-year returns (`yearly`):
+
+   | Fund | Stands for | Window | `vol` | `yearly` |
+   |---|---|---|---|---|
+   | VTI | equity | 2001–2026 | 19.0% | 17.8% |
+   | BND | bonds | 2007–2026 | 5.2% | 5.2% |
+   | VBIAX | 60/40 balanced | 2001–2026 | 11.3% | 11.6% |
+   | AOR | 60/40 balanced | 2008–2026 | 12.5% | 9.4% |
+
+   VBIAX is the balanced reference, not AOR. AOR began after the 2008 crash, so its
+   calendar-year spread leaves out the worst year a balanced fund has had. Rejected:
+   the drafted 15% for equity, which sits below both measures. Rejected: simulating on
+   the equity pair, which models a retiree as 100% in stocks.
+
+   The simulation steps yearly, so it needs the spread of *yearly* returns.
+   `get_historical_return`'s `annualized_volatility` is built from daily returns, and
+   for a fund with a short history it can be well above the yearly figure (AOR: 12.5%
+   against 9.4%). Using it for a named holding errs on the side of caution, so it is
+   accepted. The tool's docstring says it is an approximation.
 9. **One return and one volatility per call. Blending an allocation is out of scope.**
    A 60/40 portfolio's volatility isn't a weighted average, and making the model blend
    it would be model arithmetic. If live runs show the model blending, that becomes its
@@ -127,8 +156,11 @@ the PR's last commit · status table updated in the same PR.
     (`CLAUDE.md` → Conventions): if you give a chance of success or of running out, it
     is a probability `simulate_withdrawal_plan` returned, quoted as is. Never turn it
     into odds, a complement or "about 1 in 5" yourself.
-11. **The skill runs the simulation once, with the same inputs as its step-3 drawdown
-    test on the conservative (5%) projection.** It explains the result as "the money
+11. **The skill runs the simulation once, on the balanced pair (decision 8), with the
+    portfolio and withdrawal from its step-3 drawdown test on the conservative (5%)
+    projection.** Unless the user named their holdings, the simulation's
+    `annual_return` and `annual_volatility` are the balanced defaults, and the skill
+    names both constants' values. It explains the result as "the money
     lasted to 95 in 81% of simulated markets", never as "an 81% chance you'll be fine".
     It says that running out in a simulation means spending would have to be cut, not
     that the person ends up with nothing. And it calls the result a model, not a
@@ -156,13 +188,15 @@ subagent, returns the fields in decision 7, and the prompt covers probabilities.
   `test_withdrawal_plan` for the yearly path.
 - `test_withdrawal_plan`'s caveat and docstring name the new tool instead of "a Monte
   Carlo simulation is required".
-- Volatility default constants are in `prompts.py`; `PROMPT_DEFAULT_PERCENTS` and the
-  "# Assumptions" section are built from them. The probability paragraph (decision 10)
+- The volatility constants and the balanced return constant are in `prompts.py`;
+  `PROMPT_DEFAULT_PERCENTS` and the "# Assumptions" section are built from them, with
+  each volatility stated next to its return. The probability paragraph (decision 10)
   goes into "# The arithmetic rule".
 
 ### Steps
 
-1. Ask the owner to confirm the decision 8 defaults.
+1. Re-check decision 8's table on the installed yfinance. If a figure has moved enough
+   to change its rounding, stop and ask the owner.
 2. Write the `finance` function test-first. The tests that make it trustworthy:
    - **`annual_volatility=0` reproduces `withdrawal_sustainability`.** The same
      depletion year and ending balance, with probability 1 or 0. This pins the yearly
