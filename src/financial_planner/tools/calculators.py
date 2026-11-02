@@ -141,7 +141,9 @@ def plan_debt_payoff(
     Returns:
         JSON with months_to_debt_free, total_interest_paid, payoff_order,
         total_minimum_payments, and extra_beyond_minimums (the budget left
-        after the minimums, aimed at the target debt).
+        after the minimums, aimed at the target debt). Each payoff_order entry
+        has paid_off_month and monthly_payment_before_payoff: the full payment
+        that debt was getting, which rolls to the next one once it clears.
     """
     try:
         return ok(
