@@ -34,6 +34,8 @@ Conventions used throughout:
 from __future__ import annotations
 
 import math
+import random
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 
 __all__ = [
@@ -48,6 +50,7 @@ __all__ = [
     "project_portfolio",
     "real_rate",
     "required_monthly_contribution",
+    "simulate_withdrawal",
     "whole_dollars",
     "sum_amounts",
     "withdrawal_sustainability",
@@ -469,6 +472,79 @@ def payoff_debts(
     )
 
 
+def _first_year_withdrawal(
+    *,
+    portfolio_value: float,
+    years: int,
+    annual_return: float,
+    annual_withdrawal: float | None,
+    monthly_withdrawal: float | None,
+    annual_inflation: float,
+) -> float:
+    """Validate a drawdown's inputs and return the first year's withdrawal.
+
+    Takes exactly one of ``annual_withdrawal`` or ``monthly_withdrawal``.
+    People state retirement spending per month; an annual-only input made the
+    model multiply by twelve itself and quote the product, a figure no tool
+    had produced.
+    """
+    if (annual_withdrawal is None) == (monthly_withdrawal is None):
+        raise ValueError("give exactly one of annual_withdrawal or monthly_withdrawal")
+    if monthly_withdrawal is not None:
+        _check_non_negative("monthly_withdrawal", monthly_withdrawal)
+        annual_withdrawal = monthly_withdrawal * 12
+    assert annual_withdrawal is not None
+    _check_non_negative("portfolio_value", portfolio_value)
+    _check_non_negative("annual_withdrawal", annual_withdrawal)
+    _check_rate("annual_return", annual_return)
+    _check_rate("annual_inflation", annual_inflation)
+    if not 0 < years <= _MAX_YEARS:
+        raise ValueError(f"years must be in (0, {_MAX_YEARS}], got {years}")
+    return float(annual_withdrawal)
+
+
+def _withdrawal_figures(portfolio_value: float, annual_withdrawal: float) -> dict:
+    """The first-year figures both drawdown tools return, so either can be quoted alone."""
+    initial_rate = annual_withdrawal / portfolio_value if portfolio_value else 0.0
+    return {
+        "initial_withdrawal_rate": round(initial_rate, 4),
+        "first_year_annual_withdrawal": whole_dollars(annual_withdrawal),
+        "first_year_monthly_withdrawal": whole_dollars(annual_withdrawal / 12),
+    }
+
+
+def _draw_down(
+    *,
+    portfolio_value: float,
+    first_year_withdrawal: float,
+    annual_inflation: float,
+    growth_factors: Iterable[float],
+) -> tuple[list[float], int | None]:
+    """The yearly step both drawdown tools take, so the two cannot drift apart.
+
+    Each year the balance grows by that year's factor, then the year's
+    withdrawal comes out; the withdrawal then grows with inflation. Returns
+    the end-of-year balances and the year the money ran out, or ``None``.
+    """
+    balance = float(portfolio_value)
+    withdrawal = float(first_year_withdrawal)
+    depleted_year: int | None = None
+    balances: list[float] = []
+
+    for year, factor in enumerate(growth_factors, start=1):
+        if depleted_year is None:
+            balance = balance * factor - withdrawal
+            if balance <= 0:
+                # Clamp at zero and stop drawing down. Without this the loop
+                # keeps subtracting from an empty portfolio and reports a
+                # meaningless large negative "balance".
+                depleted_year = year
+                balance = 0.0
+        balances.append(balance)
+        withdrawal *= 1.0 + annual_inflation
+    return balances, depleted_year
+
+
 def withdrawal_sustainability(
     *,
     portfolio_value: float,
@@ -484,56 +560,188 @@ def withdrawal_sustainability(
     ignores sequence-of-returns risk, which is the dominant risk in early
     retirement -- a portfolio that survives this test can still fail in practice
     if poor returns land in the first few years. Treat the result as a
-    necessary condition, not a sufficient one.
+    necessary condition, not a sufficient one; :func:`simulate_withdrawal`
+    gives the probability.
 
     Takes the first-year withdrawal as exactly one of ``annual_withdrawal`` or
-    ``monthly_withdrawal``, and returns both. People state retirement spending
-    per month; an annual-only input made the model multiply by twelve itself
-    and quote the product, a figure no tool had produced.
+    ``monthly_withdrawal``, and returns both.
     """
-    if (annual_withdrawal is None) == (monthly_withdrawal is None):
-        raise ValueError("give exactly one of annual_withdrawal or monthly_withdrawal")
-    if monthly_withdrawal is not None:
-        _check_non_negative("monthly_withdrawal", monthly_withdrawal)
-        annual_withdrawal = monthly_withdrawal * 12
-    assert annual_withdrawal is not None
-    _check_non_negative("portfolio_value", portfolio_value)
-    _check_non_negative("annual_withdrawal", annual_withdrawal)
-    _check_rate("annual_return", annual_return)
-    _check_rate("annual_inflation", annual_inflation)
-    if not 0 < years <= _MAX_YEARS:
-        raise ValueError(f"years must be in (0, {_MAX_YEARS}], got {years}")
-
-    balance = float(portfolio_value)
-    withdrawal = float(annual_withdrawal)
-    depleted_year: int | None = None
-    path: list[dict[str, int]] = []
-
-    for year in range(1, years + 1):
-        if depleted_year is None:
-            balance = balance * (1.0 + annual_return) - withdrawal
-            if balance <= 0:
-                # Clamp at zero and stop drawing down. Without this the loop
-                # keeps subtracting from an empty portfolio and reports a
-                # meaningless large negative "balance".
-                depleted_year = year
-                balance = 0.0
-        path.append({"year": year, "balance": whole_dollars(balance)})
-        withdrawal *= 1.0 + annual_inflation
-
-    initial_rate = annual_withdrawal / portfolio_value if portfolio_value else 0.0
+    annual = _first_year_withdrawal(
+        portfolio_value=portfolio_value,
+        years=years,
+        annual_return=annual_return,
+        annual_withdrawal=annual_withdrawal,
+        monthly_withdrawal=monthly_withdrawal,
+        annual_inflation=annual_inflation,
+    )
+    balances, depleted_year = _draw_down(
+        portfolio_value=portfolio_value,
+        first_year_withdrawal=annual,
+        annual_inflation=annual_inflation,
+        growth_factors=[1.0 + annual_return] * years,
+    )
     return {
         "survives_horizon": depleted_year is None,
         "depleted_in_year": depleted_year,
-        "ending_balance": whole_dollars(balance),
-        "initial_withdrawal_rate": round(initial_rate, 4),
-        "first_year_annual_withdrawal": whole_dollars(annual_withdrawal),
-        "first_year_monthly_withdrawal": whole_dollars(annual_withdrawal / 12),
-        "yearly_path": path,
+        "ending_balance": whole_dollars(balances[-1]),
+        **_withdrawal_figures(portfolio_value, annual),
+        "yearly_path": [
+            {"year": year, "balance": whole_dollars(balance)}
+            for year, balance in enumerate(balances, start=1)
+        ],
         "caveat": (
             "Deterministic single-path projection. Ignores sequence-of-returns "
-            "risk and market volatility; a Monte Carlo simulation is required "
-            "for a genuine probability of success."
+            "risk and market volatility; simulate_withdrawal_plan gives a "
+            "probability of success."
+        ),
+    }
+
+
+_MAX_RETIREMENT_AGE = 120
+
+
+def _log_sigma(median_factor: float, volatility: float) -> float:
+    """The log-space spread that gives yearly returns a standard deviation of
+    ``volatility`` around a lognormal whose median is ``median_factor``.
+
+    For ``X = m * exp(s * Z)``, ``Var(X) = m^2 * u * (u - 1)`` with
+    ``u = exp(s^2)``; solving the quadratic in ``u`` gives ``s``. Using the
+    measured volatility as ``s`` directly would understate the spread.
+    """
+    ratio = volatility / median_factor
+    u = (1.0 + math.sqrt(1.0 + 4.0 * ratio * ratio)) / 2.0
+    return math.sqrt(math.log(u))
+
+
+def _nearest_rank(ordered: list, share: float):
+    """The value at or below which ``share`` of a sorted list falls (nearest rank)."""
+    return ordered[max(math.ceil(share * len(ordered)), 1) - 1]
+
+
+def simulate_withdrawal(
+    *,
+    portfolio_value: float,
+    years: int,
+    annual_return: float,
+    annual_volatility: float,
+    seed: int,
+    annual_withdrawal: float | None = None,
+    monthly_withdrawal: float | None = None,
+    annual_inflation: float = 0.025,
+    retirement_age: int | None = None,
+    paths: int = 10_000,
+) -> dict:
+    """The share of simulated markets in which an inflation-adjusted drawdown lasts.
+
+    Runs :func:`withdrawal_sustainability`'s yearly step ``paths`` times, each
+    year's growth drawn from a lognormal whose *median* is ``1 + annual_return``
+    (so the middle path stays near the deterministic one) and whose yearly
+    returns have a standard deviation of ``annual_volatility``. Inflation stays
+    fixed. With ``annual_volatility=0`` every path is the deterministic one.
+
+    ``seed`` is a parameter so the result is reproducible: the same inputs
+    always give the same answer, which a probability that moved on a rerun
+    would not. Probabilities are rounded to two decimals -- at 10,000 paths the
+    sampling error is about half a point, so a decimal place would be false
+    precision. Every figure an answer needs is returned, so none has to be
+    derived: both probabilities, ages as well as years.
+    """
+    annual = _first_year_withdrawal(
+        portfolio_value=portfolio_value,
+        years=years,
+        annual_return=annual_return,
+        annual_withdrawal=annual_withdrawal,
+        monthly_withdrawal=monthly_withdrawal,
+        annual_inflation=annual_inflation,
+    )
+    _check_non_negative("annual_volatility", annual_volatility)
+    _check_rate("annual_volatility", annual_volatility)
+    if annual_return <= -1.0:
+        raise ValueError("annual_return must be above -1.0 (a total loss every year)")
+    if retirement_age is not None and not 0 <= retirement_age <= _MAX_RETIREMENT_AGE:
+        raise ValueError(
+            f"retirement_age must be in [0, {_MAX_RETIREMENT_AGE}], got {retirement_age}"
+        )
+    if paths < 1:
+        raise ValueError(f"paths must be at least 1, got {paths}")
+
+    median_factor = 1.0 + annual_return
+    sigma = _log_sigma(median_factor, annual_volatility)
+    rng = random.Random(seed)
+    endings: list[float] = []
+    depletions: list[float] = []  # the year each path ran out; inf if it never did
+    for _ in range(paths):
+        # exp(0.0) is exactly 1.0, so zero volatility reproduces 1 + r to the bit.
+        factors = (median_factor * math.exp(sigma * rng.gauss()) for _ in range(years))
+        balances, depleted_year = _draw_down(
+            portfolio_value=portfolio_value,
+            first_year_withdrawal=annual,
+            annual_inflation=annual_inflation,
+            growth_factors=factors,
+        )
+        endings.append(balances[-1])
+        depletions.append(math.inf if depleted_year is None else depleted_year)
+    endings.sort()
+    depletions.sort()
+
+    survived = sum(1 for year in depletions if year == math.inf)
+    # Whole percent, halves up, in integers so the two always add to 100.
+    success_percent = (200 * survived + paths) // (2 * paths)
+    deflator = (1.0 + annual_inflation) ** years
+
+    def balances_at(scale: float) -> dict[str, int]:
+        return {
+            label: whole_dollars(_nearest_rank(endings, share) / scale)
+            for label, share in (
+                ("10th_percentile", 0.10),
+                ("median", 0.50),
+                ("90th_percentile", 0.90),
+            )
+        }
+
+    def depleted_by(share: float) -> int | None:
+        year = _nearest_rank(depletions, share)
+        return None if year == math.inf else int(year)
+
+    worst_10, worst_25 = depleted_by(0.10), depleted_by(0.25)
+    result: dict = {
+        "success_probability": success_percent / 100,
+        "failure_probability": (100 - success_percent) / 100,
+        "ending_balance": balances_at(1.0),
+        "ending_balance_real": balances_at(deflator),
+        "worst_10_percent_depleted_by_year": worst_10,
+        "worst_25_percent_depleted_by_year": worst_25,
+    }
+    if retirement_age is not None:
+        # The age at the end of that year: the drawdown starts at retirement_age.
+        def age(year: int | None) -> int | None:
+            return None if year is None else retirement_age + year
+
+        result |= {
+            "horizon_end_age": age(years),
+            "worst_10_percent_depleted_by_age": age(worst_10),
+            "worst_25_percent_depleted_by_age": age(worst_25),
+        }
+    return result | {
+        **_withdrawal_figures(portfolio_value, annual),
+        "years": years,
+        "annual_return": annual_return,
+        "annual_volatility": annual_volatility,
+        "annual_inflation": annual_inflation,
+        "paths": paths,
+        "seed": seed,
+        "assumptions": [
+            "Each year's return is drawn at random: its median is annual_return "
+            "and its spread is annual_volatility.",
+            "Inflation is fixed at annual_inflation, and the withdrawal grows with it.",
+            "One return and one volatility for the whole portfolio: no asset mix, "
+            "rebalancing, fees or taxes.",
+            "The withdrawal comes out at the end of each year, after that year's growth.",
+            "The seed is fixed, so the same inputs always give the same result.",
+        ],
+        "caveat": (
+            "A model, not a forecast. Running out in a simulated market means "
+            "spending would have had to be cut, not that nothing is left to live on."
         ),
     }
 

@@ -343,9 +343,11 @@ passing tests are not enough on their own.
 
 ## Known limits
 
-`test_withdrawal_plan` is a single deterministic path, not Monte Carlo — it ignores
-sequence-of-returns risk. `get_fund_profile` converts yfinance's expense ratio by the
-scale of the field it came from; that each field's scale is fixed was checked on eight
-funds, not promised by yfinance. US-centric throughout. Single-user by design:
+`test_withdrawal_plan` is a single deterministic path that ignores sequence-of-returns
+risk; `simulate_withdrawal_plan` covers it, but with one lognormal asset and fixed
+inflation. Its seed is fixed on purpose, so a re-ask gets the same probability.
+`get_fund_profile` converts yfinance's expense ratio by the scale of the field it came
+from; that each field's scale is fixed was checked on eight funds, not promised by
+yfinance. US-centric throughout. Single-user by design:
 `FilesystemBackend` is unsafe in a shared server; multi-user needs a per-user-namespaced
 `StoreBackend`.

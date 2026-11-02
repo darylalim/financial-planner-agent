@@ -21,12 +21,14 @@ import pytest
 from financial_planner.streaming import _is_error_result
 from financial_planner.tools.calculators import (
     CALCULATOR_TOOLS,
+    SIMULATION_SEED,
     add_amounts,
     compare_fund_fees,
     loan_payment,
     plan_debt_payoff,
     project_savings,
     required_savings_rate,
+    simulate_withdrawal_plan,
 )
 from financial_planner.tools.calculators import (
     test_withdrawal_plan as withdrawal_plan_tool,
@@ -45,6 +47,15 @@ FEE_ARGS = {
     "gross_annual_return": 0.07,
     "current_expense_ratio_percent": 0.59,
     "alternative_expense_ratio_percent": 0.03,
+}
+
+# The retirement skill's drawdown, on the balanced pair it will simulate.
+SIMULATION_ARGS = {
+    "portfolio_value": 1_000_000,
+    "monthly_withdrawal": 3_000,
+    "years": 30,
+    "annual_return": 0.05,
+    "annual_volatility": 0.11,
 }
 
 LIMITS = {
@@ -82,6 +93,7 @@ VALID_CALLS = [
             "annual_return": 0.05,
         },
     ),
+    (simulate_withdrawal_plan, SIMULATION_ARGS),
     (compare_fund_fees, FEE_ARGS),
     (add_amounts, LIMITS),
 ]
@@ -104,6 +116,8 @@ INVALID_CALLS = [
         withdrawal_plan_tool,
         {"portfolio_value": 1_000, "annual_withdrawal": 40, "years": 0, "annual_return": 0.05},
     ),
+    # 11 rather than 0.11, the volatility's own version of the unit error.
+    (simulate_withdrawal_plan, dict(SIMULATION_ARGS, annual_volatility=11.0)),
     # 59 rather than 0.59: a fraction passed where the percentage belongs, x100.
     (
         compare_fund_fees,
@@ -295,6 +309,46 @@ class TestWithdrawalPlan:
         assert result["survives_horizon"] is True
 
 
+class TestSimulateWithdrawalPlan:
+    def test_the_seed_is_fixed_so_a_re_ask_gets_the_same_answer(self):
+        assert call(simulate_withdrawal_plan, **SIMULATION_ARGS) == call(
+            simulate_withdrawal_plan, **SIMULATION_ARGS
+        )
+        assert call(simulate_withdrawal_plan, **SIMULATION_ARGS)["seed"] == SIMULATION_SEED
+
+    def test_both_probabilities_are_returned(self):
+        result = call(simulate_withdrawal_plan, **SIMULATION_ARGS)
+        assert result["success_probability"] + result["failure_probability"] == pytest.approx(1)
+
+    def test_a_retirement_age_comes_back_as_ages(self):
+        result = call(simulate_withdrawal_plan, **SIMULATION_ARGS, retirement_age=65)
+        assert result["horizon_end_age"] == 95
+
+    def test_the_description_names_the_fields_an_answer_quotes(self):
+        """A skill or prompt that names a figure must name the field, so the
+        description has to carry every one an answer would quote."""
+        description = simulate_withdrawal_plan.description
+        for field in (
+            "success_probability",
+            "failure_probability",
+            "10th_percentile",
+            "worst_10_percent_depleted_by_year",
+            "_by_age",
+            "horizon_end_age",
+            "test_withdrawal_plan",
+            "get_historical_return",
+            "DECIMAL",
+        ):
+            assert field in description
+
+    def test_the_single_path_points_at_the_simulation(self):
+        """Its caveat used to say only that "a Monte Carlo simulation is
+        required", which sent the model nowhere."""
+        result = call(withdrawal_plan_tool, **VALID_CALLS[4][1])
+        assert "simulate_withdrawal_plan" in result["caveat"]
+        assert "simulate_withdrawal_plan" in withdrawal_plan_tool.description
+
+
 class TestCompareFundFees:
     def test_takes_percentages_as_get_fund_profile_reports_them(self):
         """0.59 means 0.59%, the figure get_fund_profile returns, copied as is."""
@@ -327,7 +381,16 @@ def _float_keys(value, key: str = "") -> set[str]:
 
 
 # The estimate tools' only fractional fields: rates, never dollars.
-RATE_KEYS = {"expense_ratio", "net_annual_return", "initial_withdrawal_rate"}
+RATE_KEYS = {
+    "expense_ratio",
+    "net_annual_return",
+    "initial_withdrawal_rate",
+    "success_probability",
+    "failure_probability",
+    "annual_return",
+    "annual_volatility",
+    "annual_inflation",
+}
 
 
 class TestEstimatesAreWholeDollars:
@@ -341,7 +404,13 @@ class TestEstimatesAreWholeDollars:
         [
             (tool, args)
             for tool, args in VALID_CALLS
-            if tool.name in {"project_savings", "required_savings_rate", "test_withdrawal_plan"}
+            if tool.name
+            in {
+                "project_savings",
+                "required_savings_rate",
+                "test_withdrawal_plan",
+                "simulate_withdrawal_plan",
+            }
         ]
         + [(compare_fund_fees, FEE_ARGS)],
         ids=lambda v: getattr(v, "name", ""),

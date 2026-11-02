@@ -7,9 +7,14 @@ currently happens to return.
 
 from __future__ import annotations
 
+import math
+import statistics
+from typing import Any
+
 import pytest
 
 from financial_planner.finance import (
+    _draw_down,
     amortize_loan,
     apr_monthly_rate,
     compare_fees,
@@ -18,6 +23,7 @@ from financial_planner.finance import (
     project_portfolio,
     real_rate,
     required_monthly_contribution,
+    simulate_withdrawal,
     sum_amounts,
     withdrawal_sustainability,
 )
@@ -289,6 +295,194 @@ class TestWithdrawalSustainability:
             withdrawal_sustainability(
                 portfolio_value=1_000_000, monthly_withdrawal=-1, years=30, annual_return=0.06
             )
+
+
+# A plan near the edge, so its probability is neither 0 nor 1 and can move.
+EDGE_PLAN: dict[str, Any] = {
+    "portfolio_value": 1_000_000,
+    "annual_withdrawal": 35_000,
+    "years": 30,
+    "annual_return": 0.05,
+    "annual_volatility": 0.11,
+}
+
+
+class TestSimulateWithdrawal:
+    """The Monte Carlo beside the single path. Its trustworthiness rests on the
+    zero-volatility test: with no spread it *is* the deterministic tool, which
+    pins the yearly step the two share."""
+
+    @pytest.mark.parametrize(
+        "plan",
+        [
+            {"portfolio_value": 1_000_000, "annual_withdrawal": 40_000, "annual_return": 0.05},
+            {"portfolio_value": 500_000, "annual_withdrawal": 100_000, "annual_return": 0.05},
+            {"portfolio_value": 1_234_567, "monthly_withdrawal": 6_543, "annual_return": 0.07},
+        ],
+        ids=["survives", "depletes", "monthly"],
+    )
+    def test_zero_volatility_reproduces_the_single_path(self, plan):
+        single = withdrawal_sustainability(years=30, **plan)
+        simulated = simulate_withdrawal(years=30, annual_volatility=0.0, seed=1, paths=50, **plan)
+        assert simulated["success_probability"] == (1.0 if single["survives_horizon"] else 0.0)
+        assert set(simulated["ending_balance"].values()) == {single["ending_balance"]}
+        assert simulated["worst_10_percent_depleted_by_year"] == single["depleted_in_year"]
+        assert simulated["worst_25_percent_depleted_by_year"] == single["depleted_in_year"]
+        for key in (
+            "initial_withdrawal_rate",
+            "first_year_annual_withdrawal",
+            "first_year_monthly_withdrawal",
+        ):
+            assert simulated[key] == single[key]
+
+    def test_the_same_seed_gives_the_same_payload(self):
+        assert simulate_withdrawal(**EDGE_PLAN, seed=7) == simulate_withdrawal(**EDGE_PLAN, seed=7)
+
+    def test_another_seed_moves_the_probability_only_by_sampling_error(self):
+        """At p near 0.8 over 10,000 paths the standard error is 0.4 points."""
+        a = simulate_withdrawal(**EDGE_PLAN, seed=1)["success_probability"]
+        b = simulate_withdrawal(**EDGE_PLAN, seed=2)["success_probability"]
+        assert 0.05 < a < 0.95
+        assert abs(a - b) <= 0.02
+
+    def test_the_median_path_compounds_at_the_assumed_return(self):
+        """Decision 2: the median growth is the user's rate, so the simulation's
+        middle agrees with the single path they can follow year by year."""
+        result = simulate_withdrawal(
+            portfolio_value=1_000_000,
+            annual_withdrawal=0,
+            years=30,
+            annual_return=0.05,
+            annual_volatility=0.11,
+            annual_inflation=0.0,
+            seed=3,
+        )
+        compounded = (result["ending_balance"]["median"] / 1_000_000) ** (1 / 30) - 1
+        assert compounded == pytest.approx(0.05, abs=0.001)
+
+    def test_the_volatility_is_the_spread_of_yearly_returns(self):
+        """The input is a spread of returns, as measured; the log-space sigma
+        the draws use is derived from it, not equal to it."""
+        result = simulate_withdrawal(
+            portfolio_value=1_000_000,
+            annual_withdrawal=0,
+            years=1,
+            annual_return=0.05,
+            annual_volatility=0.11,
+            annual_inflation=0.0,
+            seed=4,
+        )
+        # Three points of the distribution, recovered from what was returned:
+        # under a lognormal, p90/p50 = p50/p10 = exp(1.2816 * sigma).
+        balances = result["ending_balance"]
+        sigma = (balances["90th_percentile"] / balances["10th_percentile"]) ** 0.5
+        spread = statistics.NormalDist().inv_cdf(0.9)
+        log_sigma = math.log(sigma) / spread
+        median = balances["median"] / 1_000_000
+        stdev = median * math.sqrt(math.exp(log_sigma**2) * (math.exp(log_sigma**2) - 1))
+        assert stdev == pytest.approx(0.11, abs=0.004)
+
+    def test_bad_years_first_do_more_damage_than_bad_years_last(self):
+        """Sequence-of-returns risk, the reason this tool exists: the same
+        returns in a different order leave a drawing-down portfolio worse off."""
+        returns = [-0.25, -0.15, -0.10] + [0.08] * 24 + [0.15, 0.20, 0.25]
+        common = {"portfolio_value": 1_000_000, "first_year_withdrawal": 50_000}
+        early, early_depleted = _draw_down(
+            **common, annual_inflation=0.025, growth_factors=[1 + r for r in returns]
+        )
+        late, late_depleted = _draw_down(
+            **common, annual_inflation=0.025, growth_factors=[1 + r for r in reversed(returns)]
+        )
+        assert late_depleted is None
+        assert early_depleted is not None or early[-1] < late[-1]
+
+    def test_more_volatility_lowers_success_on_the_same_median(self):
+        """Only for a plan whose median path survives, as a retirement plan
+        worth testing does. When the median path fails, spread *raises*
+        success, since only a lucky run of years gets through."""
+        assert withdrawal_sustainability(
+            **{k: v for k, v in EDGE_PLAN.items() if k != "annual_volatility"}
+        )["survives_horizon"]
+        calm = simulate_withdrawal(**{**EDGE_PLAN, "annual_volatility": 0.05}, seed=5)
+        wild = simulate_withdrawal(**{**EDGE_PLAN, "annual_volatility": 0.18}, seed=5)
+        assert wild["success_probability"] < calm["success_probability"]
+
+    def test_probabilities_are_two_decimals_and_add_to_one(self):
+        """Decision 6: a whole percent is honest at 10,000 paths. Both are
+        returned so "a 19% chance of running out" is never 1 - 0.81."""
+        result = simulate_withdrawal(**EDGE_PLAN, seed=6)
+        for key in ("success_probability", "failure_probability"):
+            assert result[key] == round(result[key], 2)
+        assert result["success_probability"] + result["failure_probability"] == pytest.approx(1)
+
+    def test_balances_are_whole_dollars_nominal_and_real(self):
+        result = simulate_withdrawal(**EDGE_PLAN, seed=6)
+        for key in ("ending_balance", "ending_balance_real"):
+            assert set(result[key]) == {"10th_percentile", "median", "90th_percentile"}
+            assert all(isinstance(v, int) for v in result[key].values())
+        assert result["ending_balance_real"]["median"] < result["ending_balance"]["median"]
+
+    def test_depletion_is_null_when_too_few_paths_fail(self):
+        result = simulate_withdrawal(**{**EDGE_PLAN, "annual_withdrawal": 25_000}, seed=6)
+        assert result["failure_probability"] < 0.10
+        assert result["worst_10_percent_depleted_by_year"] is None
+        assert result["worst_25_percent_depleted_by_year"] is None
+
+    def test_the_worst_tenth_runs_out_before_the_worst_quarter(self):
+        result = simulate_withdrawal(**{**EDGE_PLAN, "annual_withdrawal": 70_000}, seed=6)
+        assert result["failure_probability"] > 0.25
+        ten = result["worst_10_percent_depleted_by_year"]
+        quarter = result["worst_25_percent_depleted_by_year"]
+        assert ten is not None and quarter is not None
+        assert ten <= quarter <= 30
+
+    def test_ages_are_returned_so_the_model_never_adds_them(self):
+        """The checker sees only $ and %, so an age the model worked out
+        (year + age) would pass it unchecked. Returning the age is the guard."""
+        plan = {**EDGE_PLAN, "annual_withdrawal": 70_000}
+        result = simulate_withdrawal(**plan, retirement_age=65, seed=6)
+        assert result["horizon_end_age"] == 95
+        assert result["worst_10_percent_depleted_by_age"] == (
+            65 + result["worst_10_percent_depleted_by_year"]
+        )
+        assert result["worst_25_percent_depleted_by_age"] == (
+            65 + result["worst_25_percent_depleted_by_year"]
+        )
+
+    def test_without_a_retirement_age_there_are_no_ages(self):
+        result = simulate_withdrawal(**EDGE_PLAN, seed=6)
+        assert not [key for key in result if "age" in key.split("_")]
+
+    def test_the_inputs_are_echoed_as_assumptions_to_state(self):
+        result = simulate_withdrawal(**EDGE_PLAN, seed=6)
+        assert result["paths"] == 10_000
+        assert result["seed"] == 6
+        assert result["annual_return"] == 0.05
+        assert result["annual_volatility"] == 0.11
+        assert result["annual_inflation"] == 0.025
+        assert result["caveat"]
+
+    def test_a_monthly_withdrawal_is_the_same_plan_as_twelve_times_it(self):
+        plan = {k: v for k, v in EDGE_PLAN.items() if k != "annual_withdrawal"}
+        monthly = simulate_withdrawal(**plan, monthly_withdrawal=5_000, seed=8, paths=500)
+        annual = simulate_withdrawal(**plan, annual_withdrawal=60_000, seed=8, paths=500)
+        assert monthly == annual
+
+    @pytest.mark.parametrize(
+        ("change", "message"),
+        [
+            ({"annual_volatility": 18}, "annual_volatility"),
+            ({"annual_volatility": -0.1}, "annual_volatility"),
+            ({"annual_return": -1.0}, "annual_return"),
+            ({"monthly_withdrawal": 5_000}, "exactly one"),
+            ({"years": 0}, "years"),
+            ({"retirement_age": -1}, "retirement_age"),
+        ],
+        ids=["percent-not-decimal", "negative-volatility", "total-loss", "both", "years", "age"],
+    )
+    def test_bad_inputs_are_rejected(self, change, message):
+        with pytest.raises(ValueError, match=message):
+            simulate_withdrawal(**{**EDGE_PLAN, **change}, seed=1, paths=10)
 
 
 class TestGuardsFoundByReview:
