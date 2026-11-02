@@ -39,7 +39,7 @@ import sys
 import tempfile
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -97,7 +97,10 @@ atexit.register(shutil.rmtree, _LIVE_ROOT, ignore_errors=True)
 
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
+import anthropic  # noqa: E402
+import httpx2  # noqa: E402
 from answer_checks import missing_tools, unsourced_figures  # noqa: E402
+from batch import RunResult, exit_status, run_once_with_retry  # noqa: E402
 from langchain_core.callbacks import BaseCallbackHandler  # noqa: E402
 from langgraph.checkpoint.memory import InMemorySaver  # noqa: E402
 
@@ -289,24 +292,6 @@ class UsageRecorder(BaseCallbackHandler):
                 if usage:
                     self.input_tokens += usage.get("input_tokens", 0)
                     self.output_tokens += usage.get("output_tokens", 0)
-
-
-@dataclass
-class RunResult:
-    """One run of one scenario, all turns, for the summary table."""
-
-    unsourced: int = 0
-    missing_tools: int = 0
-    defects: int = 0
-    empty_answers: int = 0
-    input_tokens: int = 0
-    output_tokens: int = 0
-    seconds: float = 0.0
-    problems: list[str] = field(default_factory=list)
-
-    @property
-    def ok(self) -> bool:
-        return not self.problems
 
 
 def check_answer(answer: str, tools: list[str]) -> list[str]:
@@ -531,7 +516,7 @@ def print_summary(model: str, results: dict[str, list[RunResult]]) -> None:
     print(f"\n{'=' * 78}\nSUMMARY   model: {model}")
     header = (
         f"  {'scenario':12s} {'runs':>4s} {'clean':>5s} {'unsrc':>5s} {'miss':>4s} "
-        f"{'defect':>6s} {'empty':>5s} {'in tok':>9s} {'out tok':>8s} {'secs':>6s}"
+        f"{'defect':>6s} {'empty':>5s} {'notrun':>6s} {'in tok':>9s} {'out tok':>8s} {'secs':>6s}"
     )
     print(header)
     for name, runs in results.items():
@@ -539,9 +524,23 @@ def print_summary(model: str, results: dict[str, list[RunResult]]) -> None:
             f"  {name:12s} {len(runs):4d} {sum(r.ok for r in runs):5d} "
             f"{sum(r.unsourced for r in runs):5d} {sum(r.missing_tools for r in runs):4d} "
             f"{sum(r.defects for r in runs):6d} {sum(r.empty_answers for r in runs):5d} "
+            f"{sum(bool(r.not_run) for r in runs):6d} "
             f"{sum(r.input_tokens for r in runs):9d} {sum(r.output_tokens for r in runs):8d} "
             f"{sum(r.seconds for r in runs):6.0f}"
         )
+
+
+# A dropped connection, not a verdict on the model (plan decision 9). The SDK
+# wraps failures during a request in APIConnectionError (APITimeoutError is a
+# subclass); a stream cut mid-response can surface as the HTTP client's own
+# error instead; ConnectionError covers a raw socket reset either way. The
+# client is httpx2, not httpx (anthropic 1.17), and httpx.TransportError
+# would match nothing the SDK raises. Re-check after an anthropic upgrade.
+TRANSPORT_ERRORS: tuple[type[BaseException], ...] = (
+    anthropic.APIConnectionError,
+    httpx2.TransportError,
+    ConnectionError,
+)
 
 
 def main() -> int:
@@ -583,11 +582,17 @@ def main() -> int:
         return 2
 
     results = {
-        name: [run_scenario(name, SCENARIOS[name], args.model) for _ in range(args.repeat)]
+        name: [
+            run_once_with_retry(
+                lambda name=name: run_scenario(name, SCENARIOS[name], args.model),
+                TRANSPORT_ERRORS,
+            )
+            for _ in range(args.repeat)
+        ]
         for name in requested
     }
     print_summary(args.model, results)
-    return 0 if all(r.ok for runs in results.values() for r in runs) else 1
+    return exit_status(r for runs in results.values() for r in runs)
 
 
 if __name__ == "__main__":
