@@ -200,6 +200,24 @@ class TestToolInputsAreNotASource:
         answer = "With a $3,275,000 target, the money lasts to 95."
         assert _unsourced(answer, output, user=RETIREMENT_TURN_1) == ["$3,275,000"]
 
+    def test_it_is_reported_as_a_tool_input(self):
+        """Still unsourced, but named, so the failure points at the call's arguments.
+        The recorder keeps a call's input as LangChain's str() of the args."""
+        answer = "With a $3,275,000 target and $1,900 saved monthly, it lasts to 95."
+        unsourced = _unsourced(answer)
+        inputs = [str({"portfolio_value": 3275000.0, "years": 30, "annual_return": 0.05})]
+        assert unsourced == ["$3,275,000", "$1,900"]
+        assert checks.tool_input_only(answer, unsourced, inputs) == ["$3,275,000"]
+
+    def test_a_sourced_figure_is_never_reported_as_a_tool_input(self):
+        """Only figures already unsourced are classified; the user's own $310,000,
+        passed into a tool, is sourced by the user and stays out of the list."""
+        answer = "Starting from $310,000."
+        inputs = [str({"starting_balance": 310000})]
+        unsourced = _unsourced(answer, user=RETIREMENT_TURN_1)
+        assert unsourced == []
+        assert checks.tool_input_only(answer, unsourced, inputs) == []
+
 
 class TestExpectedTools:
     def test_every_expected_tool_exists(self):

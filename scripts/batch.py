@@ -29,6 +29,8 @@ class RunResult:
     """One run of one scenario, all turns, for the summary table."""
 
     unsourced: int = 0
+    # Of those, the figures that matched only a tool's input (plan decision 4).
+    tool_input: int = 0
     missing_tools: int = 0
     defects: int = 0
     empty_answers: int = 0
@@ -36,7 +38,7 @@ class RunResult:
     output_tokens: int = 0
     seconds: float = 0.0
     problems: list[str] = field(default_factory=list)
-    # Why the run never finished, if it didn't. Set only by run_batch.
+    # Why the run never finished, if it didn't. Set only by run_once_with_retry.
     not_run: str = ""
 
     @property
