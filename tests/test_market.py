@@ -320,6 +320,8 @@ class TestHistoricalReturn:
         assert result["years_covered"] == pytest.approx(5.0, abs=0.05)
         assert result["annualized_return"] == pytest.approx(0.1487, abs=0.005)
         assert result["total_return"] == pytest.approx(1.0, abs=0.01)
+        # Returned, not left to the model to add 1 to total_return.
+        assert result["growth_of_1_dollar"] == pytest.approx(2.0, abs=0.01)
 
     def test_volatility_is_annualized_by_the_series_own_bar_rate(self, monkeypatch):
         """A geometric series has zero variance, so it cannot test this.
