@@ -81,7 +81,8 @@ def required_savings_rate(
         annual_return: Expected annual return as a DECIMAL (0.07 = 7%).
 
     Returns:
-        JSON with required_monthly_contribution in dollars.
+        JSON with required_monthly_contribution in whole dollars, rounded up
+        so it reaches the target.
     """
     try:
         pmt = finance.required_monthly_contribution(

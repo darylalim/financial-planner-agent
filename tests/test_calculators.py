@@ -314,6 +314,89 @@ class TestCompareFundFees:
         assert "DECIMAL" in description
 
 
+def _float_keys(value, key: str = "") -> set[str]:
+    """The keys, anywhere in a payload, whose value is a float rather than an int."""
+    if isinstance(value, float):
+        return {key}
+    if isinstance(value, dict):
+        return set().union(*(_float_keys(v, k) for k, v in value.items()))
+    if isinstance(value, list):
+        return set().union(*(_float_keys(v, key) for v in value))
+    return set()
+
+
+# The estimate tools' only fractional fields: rates, never dollars.
+RATE_KEYS = {"expense_ratio", "net_annual_return", "initial_withdrawal_rate"}
+
+
+class TestEstimatesAreWholeDollars:
+    """Plan decision 10. The fees scenario showed compare_fund_fees' 820949.52 as
+    "$820,949" in 3 of 3 runs -- a truncation, so a figure no tool produced.
+    Cents on a 25-year estimate are false precision; with none, there is nothing
+    to truncate. Amounts that must match a statement keep their cents."""
+
+    @pytest.mark.parametrize(
+        ("tool", "args"),
+        [
+            (tool, args)
+            for tool, args in VALID_CALLS
+            if tool.name in {"project_savings", "required_savings_rate", "test_withdrawal_plan"}
+        ]
+        + [(compare_fund_fees, FEE_ARGS)],
+        ids=lambda v: getattr(v, "name", ""),
+    )
+    def test_every_dollar_figure_is_whole(self, tool, args):
+        result = call(tool, **args)
+        assert "error" not in result
+        assert _float_keys(result) <= RATE_KEYS
+
+    def test_the_fees_scenario_balance_is_the_rounded_one(self):
+        assert call(compare_fund_fees, **FEE_ARGS)["alternative"]["ending_balance"] == 820_950
+
+    def test_the_fee_gap_still_splits_exactly(self):
+        """Every difference is taken from the rounded figures, so rounding each
+        on its own cannot leave the parts a dollar off the whole."""
+        result = call(compare_fund_fees, **FEE_ARGS)
+        assert (
+            result["alternative_ending_balance_higher_by"]
+            == result["alternative_fees_lower_by"] + result["growth_lost_on_the_fee_difference"]
+        )
+        assert (
+            result["alternative_ending_balance_higher_by"]
+            == result["alternative"]["ending_balance"] - result["current"]["ending_balance"]
+        )
+
+    def test_a_projection_still_adds_up(self):
+        args = dict(VALID_CALLS[0][1], starting_balance=50_000.40)
+        result = call(project_savings, **args)
+        assert result["final_balance_nominal"] == (
+            50_000 + result["total_contributed"] + result["total_growth"]
+        )
+
+    def test_a_required_contribution_rounds_up(self):
+        """Rounded down, it would fall short of the target it was solved for."""
+        args = {"target_amount": 1_000_000, "starting_balance": 50_000, "years": 25}
+        result = call(required_savings_rate, **args, annual_return=0.07)
+        assert isinstance(result["required_monthly_contribution"], int)
+        projected = call(
+            project_savings,
+            starting_balance=50_000,
+            monthly_contribution=result["required_monthly_contribution"],
+            years=25,
+            annual_return=0.07,
+            annual_inflation=0.0,
+        )
+        assert projected["final_balance_nominal"] >= 1_000_000
+
+    def test_a_loan_payment_keeps_its_cents(self):
+        result = call(loan_payment, principal=300_000, apr=0.06, years=30)
+        assert result["monthly_payment"] == 1798.65
+
+    def test_debt_interest_keeps_its_cents(self):
+        result = call(plan_debt_payoff, debts=DEBTS, monthly_budget=500.0)
+        assert "total_interest_paid" in _float_keys(result)
+
+
 class TestAddAmounts:
     def test_totals_labelled_amounts(self):
         result = call(add_amounts, **LIMITS)
