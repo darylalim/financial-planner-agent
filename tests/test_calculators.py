@@ -14,6 +14,7 @@ than a copy of what its input is assumed to look like.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -387,6 +388,45 @@ class TestEstimatesAreWholeDollars:
             annual_inflation=0.0,
         )
         assert projected["final_balance_nominal"] >= 1_000_000
+
+    def test_the_increase_over_what_they_save_now_is_returned(self):
+        """Phase 2's confirmation batch: the tool returned "$3,555 in total" and
+        the model wrote "about $1,655 more than now" -- its own subtraction,
+        prompted by a skill that promised the *additional* amount."""
+        args = {"target_amount": 2_000_000, "starting_balance": 310_000, "years": 24}
+        result = call(
+            required_savings_rate, **args, annual_return=0.05, current_monthly_contribution=1_900
+        )
+        assert result["increase_over_current"] == result["required_monthly_contribution"] - 1_900
+        assert isinstance(result["increase_over_current"], int)
+
+    def test_already_saving_more_is_a_negative_increase(self):
+        args = {"target_amount": 100_000, "starting_balance": 0, "years": 30}
+        result = call(
+            required_savings_rate, **args, annual_return=0.07, current_monthly_contribution=1_000
+        )
+        assert result["increase_over_current"] < 0
+
+    def test_without_a_current_contribution_there_is_no_increase(self):
+        result = call(required_savings_rate, **VALID_CALLS[1][1])
+        assert "increase_over_current" not in result
+
+    def test_a_negative_current_contribution_is_an_error(self):
+        args = {"target_amount": 100_000, "starting_balance": 0, "years": 30}
+        result = call(
+            required_savings_rate, **args, annual_return=0.07, current_monthly_contribution=-1
+        )
+        assert "error" in result
+
+    def test_the_retirement_skill_names_the_field_it_promises(self):
+        """The skill once sent the model here "for the additional monthly
+        contribution needed" while the tool returned only the total."""
+        skill = (
+            Path(__file__).resolve().parents[1] / "agent_home/skills/retirement-readiness/SKILL.md"
+        ).read_text(encoding="utf-8")
+        assert "current_monthly_contribution" in skill
+        assert "increase_over_current" in skill
+        assert "increase_over_current" in required_savings_rate.description
 
     def test_a_loan_payment_keeps_its_cents(self):
         result = call(loan_payment, principal=300_000, apr=0.06, years=30)

@@ -67,22 +67,30 @@ def required_savings_rate(
     starting_balance: float,
     years: int,
     annual_return: float,
+    current_monthly_contribution: float | None = None,
 ) -> str:
     """Solve for the monthly contribution needed to reach a savings target.
 
     Call this for goal-driven questions: "how much do I need to save each month
     to have $1M by 65", a house down payment, a college fund. Returns 0 when the
-    existing balance already compounds past the target unaided.
+    existing balance already compounds past the target unaided. If you tell the
+    user how much more (or less) than now they would need to save, pass what
+    they save now as current_monthly_contribution and quote
+    increase_over_current; never subtract it yourself.
 
     Args:
         target_amount: Goal amount in dollars.
         starting_balance: Amount already saved toward this goal.
         years: Years available to reach it.
         annual_return: Expected annual return as a DECIMAL (0.07 = 7%).
+        current_monthly_contribution: What the user saves toward this goal each
+            month now, in dollars. Optional.
 
     Returns:
-        JSON with required_monthly_contribution in whole dollars, rounded up
-        so it reaches the target.
+        JSON with required_monthly_contribution, the total needed each month,
+        in whole dollars, rounded up so it reaches the target. Given
+        current_monthly_contribution, also increase_over_current: the total
+        minus what they save now (negative when they already save more).
     """
     try:
         pmt = finance.required_monthly_contribution(
@@ -91,7 +99,19 @@ def required_savings_rate(
             years=years,
             annual_return=annual_return,
         )
-        return ok({"required_monthly_contribution": pmt})
+        result: dict[str, float] = {"required_monthly_contribution": pmt}
+        if current_monthly_contribution is not None:
+            if current_monthly_contribution < 0:
+                raise ValueError(
+                    f"current_monthly_contribution must be >= 0, got {current_monthly_contribution}"
+                )
+            result["current_monthly_contribution"] = current_monthly_contribution
+            # A live run took "$3,555 in total" and wrote "about $1,655 more
+            # than now" itself: the subtraction the arithmetic rule forbids.
+            result["increase_over_current"] = finance.whole_dollars(
+                pmt - current_monthly_contribution
+            )
+        return ok(result)
     except Exception as exc:  # noqa: BLE001
         return err(exc)
 

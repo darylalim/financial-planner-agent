@@ -48,6 +48,7 @@ __all__ = [
     "project_portfolio",
     "real_rate",
     "required_monthly_contribution",
+    "whole_dollars",
     "sum_amounts",
     "withdrawal_sustainability",
 ]
@@ -75,7 +76,7 @@ def _check_non_negative(name: str, value: float) -> None:
         raise ValueError(f"{name} must be non-negative, got {value}")
 
 
-def _whole_dollars(amount: float) -> int:
+def whole_dollars(amount: float) -> int:
     """An estimate rounded to the dollar, halves away from zero (not to even)."""
     return int(math.copysign(math.floor(abs(amount) + 0.5), amount))
 
@@ -185,20 +186,20 @@ def project_portfolio(
         yearly.append(
             {
                 "year": year,
-                "balance_nominal": _whole_dollars(balance),
-                "balance_real": _whole_dollars(balance / deflator),
-                "contributed_to_date": _whole_dollars(total_contributed),
+                "balance_nominal": whole_dollars(balance),
+                "balance_real": whole_dollars(balance / deflator),
+                "contributed_to_date": whole_dollars(total_contributed),
             }
         )
 
     deflator = (1.0 + annual_inflation) ** years
-    final, contributed = _whole_dollars(balance), _whole_dollars(total_contributed)
+    final, contributed = whole_dollars(balance), whole_dollars(total_contributed)
     return ProjectionResult(
         final_balance_nominal=final,
-        final_balance_real=_whole_dollars(balance / deflator),
+        final_balance_real=whole_dollars(balance / deflator),
         total_contributed=contributed,
         # From the rounded parts, so the three add up to the dollar.
-        total_growth=final - _whole_dollars(starting_balance) - contributed,
+        total_growth=final - whole_dollars(starting_balance) - contributed,
         years=years,
         yearly_balances=yearly,
     )
@@ -517,17 +518,17 @@ def withdrawal_sustainability(
                 # meaningless large negative "balance".
                 depleted_year = year
                 balance = 0.0
-        path.append({"year": year, "balance": _whole_dollars(balance)})
+        path.append({"year": year, "balance": whole_dollars(balance)})
         withdrawal *= 1.0 + annual_inflation
 
     initial_rate = annual_withdrawal / portfolio_value if portfolio_value else 0.0
     return {
         "survives_horizon": depleted_year is None,
         "depleted_in_year": depleted_year,
-        "ending_balance": _whole_dollars(balance),
+        "ending_balance": whole_dollars(balance),
         "initial_withdrawal_rate": round(initial_rate, 4),
-        "first_year_annual_withdrawal": _whole_dollars(annual_withdrawal),
-        "first_year_monthly_withdrawal": _whole_dollars(annual_withdrawal / 12),
+        "first_year_annual_withdrawal": whole_dollars(annual_withdrawal),
+        "first_year_monthly_withdrawal": whole_dollars(annual_withdrawal / 12),
         "yearly_path": path,
         "caveat": (
             "Deterministic single-path projection. Ignores sequence-of-returns "
@@ -604,11 +605,11 @@ def compare_fees(
     )
     # Rounded once, and every difference taken from the rounded figures, so
     # the gap below is exactly the fee difference plus the lost growth.
-    current, current_fees = _whole_dollars(current), _whole_dollars(current_fees)
-    alternative, alternative_fees = _whole_dollars(alternative), _whole_dollars(alternative_fees)
+    current, current_fees = whole_dollars(current), whole_dollars(current_fees)
+    alternative, alternative_fees = whole_dollars(alternative), whole_dollars(alternative_fees)
     return {
         "years": years,
-        "total_contributed": _whole_dollars(monthly_contribution * 12 * years),
+        "total_contributed": whole_dollars(monthly_contribution * 12 * years),
         "current": {
             "expense_ratio": current_expense_ratio,
             "net_annual_return": round(gross_annual_return - current_expense_ratio, 6),

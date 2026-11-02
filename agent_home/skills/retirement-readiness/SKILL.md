@@ -60,8 +60,10 @@ Take `final_balance_nominal` from step 2 into `test_withdrawal_plan`:
 ### 4. Quantify any gap
 
 If the drawdown fails, do not stop at "you are short". Call
-`required_savings_rate` for the additional monthly contribution needed, then
-present the levers in order of impact — typically: retire later, save more,
+`required_savings_rate` with the user's current contribution as
+`current_monthly_contribution`: it returns the total needed each month and
+`increase_over_current`, the additional amount. Then present the levers in
+order of impact — typically: retire later, save more,
 spend less. Give the number attached to each.
 
 ### 5. Report
