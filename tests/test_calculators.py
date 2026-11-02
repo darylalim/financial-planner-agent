@@ -20,6 +20,7 @@ import pytest
 from financial_planner.streaming import _is_error_result
 from financial_planner.tools.calculators import (
     CALCULATOR_TOOLS,
+    add_amounts,
     compare_fund_fees,
     loan_payment,
     plan_debt_payoff,
@@ -43,6 +44,10 @@ FEE_ARGS = {
     "gross_annual_return": 0.07,
     "current_expense_ratio_percent": 0.59,
     "alternative_expense_ratio_percent": 0.03,
+}
+
+LIMITS = {
+    "amounts": [{"label": "limit", "amount": 24_500}, {"label": "catch-up", "amount": 11_250}]
 }
 
 # One valid call per tool, for the checks that should hold across all of them.
@@ -77,6 +82,7 @@ VALID_CALLS = [
         },
     ),
     (compare_fund_fees, FEE_ARGS),
+    (add_amounts, LIMITS),
 ]
 
 # Each tool paired with arguments its underlying finance function rejects.
@@ -109,6 +115,7 @@ INVALID_CALLS = [
             "alternative_expense_ratio_percent": 0.03,
         },
     ),
+    (add_amounts, {"amounts": [{"label": "only one", "amount": 1.0}]}),
 ]
 
 
@@ -305,3 +312,29 @@ class TestCompareFundFees:
         assert "expense_ratio_percent" in description
         assert "PERCENTAGE" in description
         assert "DECIMAL" in description
+
+
+class TestAddAmounts:
+    def test_totals_labelled_amounts(self):
+        result = call(add_amounts, **LIMITS)
+        assert result["total"] == 35_750
+        assert [item["label"] for item in result["items"]] == ["limit", "catch-up"]
+
+    def test_a_negative_amount_subtracts(self):
+        amounts = [
+            {"label": "target", "amount": 1_630_000},
+            {"label": "have", "amount": -1_210_000},
+        ]
+        assert call(add_amounts, amounts=amounts)["total"] == 420_000
+
+    @pytest.mark.parametrize(
+        "amounts",
+        [
+            [{"label": "a", "amount": 1.0}, {"amount": 2.0}],
+            [{"label": "a", "amount": 1.0}, {"label": "b", "amount": "lots"}],
+            [{"label": "a", "amount": 1.0}, {"label": "b", "amount": float("nan")}],
+        ],
+        ids=["no label", "not a number", "nan"],
+    )
+    def test_a_malformed_amount_is_an_error_not_a_guess(self, amounts):
+        assert "error" in call(add_amounts, amounts=amounts)

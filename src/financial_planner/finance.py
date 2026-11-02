@@ -27,6 +27,7 @@ Conventions used throughout:
 
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass, field
 
 __all__ = [
@@ -41,6 +42,7 @@ __all__ = [
     "project_portfolio",
     "real_rate",
     "required_monthly_contribution",
+    "sum_amounts",
     "withdrawal_sustainability",
 ]
 
@@ -597,4 +599,21 @@ def compare_fees(
             "Nominal dollars, not adjusted for inflation; no taxes or loads.",
             "Contributions at the end of each month, with no increases.",
         ],
+    }
+
+
+def sum_amounts(items: list[tuple[str, float]]) -> dict:
+    """Total a list of labelled amounts. A negative amount is a subtraction.
+
+    For totals no calculator produces -- two contribution limits from a search,
+    say -- so the total still comes from a tool rather than the model.
+    """
+    if len(items) < 2:
+        raise ValueError("give at least two amounts to total")
+    for label, amount in items:
+        if not math.isfinite(amount):
+            raise ValueError(f"amount for {label!r} is not a finite number: {amount}")
+    return {
+        "items": [{"label": label, "amount": amount} for label, amount in items],
+        "total": round(math.fsum(amount for _, amount in items), 2),
     }
