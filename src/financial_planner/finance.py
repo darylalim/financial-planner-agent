@@ -22,6 +22,12 @@ Conventions used throughout:
 
   Mixing these up is the most likely source of a subtly wrong number here.
 * Contributions are treated as end-of-period (ordinary annuity).
+* **Estimates are whole dollars; amounts that must match a statement keep
+  cents.** A projection, a withdrawal path, a fee comparison or a required
+  contribution rests on an assumed return, so cents on it are false precision,
+  and a model shown ``820949.52`` wrote "$820,949" -- a truncation no tool
+  produced. A loan payment, debt interest or a spending total keeps cents,
+  because ``$1,798.65`` has to match the user's statement.
 * "Real" values are inflation-adjusted into today's purchasing power.
 """
 
@@ -69,6 +75,11 @@ def _check_non_negative(name: str, value: float) -> None:
         raise ValueError(f"{name} must be non-negative, got {value}")
 
 
+def _whole_dollars(amount: float) -> int:
+    """An estimate rounded to the dollar, halves away from zero (not to even)."""
+    return int(math.copysign(math.floor(abs(amount) + 0.5), amount))
+
+
 def monthly_rate(annual_rate: float) -> float:
     """Convert an annual rate to its equivalent monthly compounding rate.
 
@@ -113,12 +124,12 @@ def real_rate(nominal_rate: float, inflation_rate: float) -> float:
 class ProjectionResult:
     """Outcome of a portfolio projection."""
 
-    final_balance_nominal: float
-    final_balance_real: float
-    total_contributed: float
-    total_growth: float
+    final_balance_nominal: int
+    final_balance_real: int
+    total_contributed: int
+    total_growth: int
     years: int
-    yearly_balances: list[dict[str, float]] = field(default_factory=list)
+    yearly_balances: list[dict[str, int]] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -162,7 +173,7 @@ def project_portfolio(
     balance = float(starting_balance)
     contribution = float(monthly_contribution)
     total_contributed = 0.0
-    yearly: list[dict[str, float]] = []
+    yearly: list[dict[str, int]] = []
 
     for year in range(1, years + 1):
         for _ in range(12):
@@ -174,18 +185,20 @@ def project_portfolio(
         yearly.append(
             {
                 "year": year,
-                "balance_nominal": round(balance, 2),
-                "balance_real": round(balance / deflator, 2),
-                "contributed_to_date": round(total_contributed, 2),
+                "balance_nominal": _whole_dollars(balance),
+                "balance_real": _whole_dollars(balance / deflator),
+                "contributed_to_date": _whole_dollars(total_contributed),
             }
         )
 
     deflator = (1.0 + annual_inflation) ** years
+    final, contributed = _whole_dollars(balance), _whole_dollars(total_contributed)
     return ProjectionResult(
-        final_balance_nominal=round(balance, 2),
-        final_balance_real=round(balance / deflator, 2),
-        total_contributed=round(total_contributed, 2),
-        total_growth=round(balance - starting_balance - total_contributed, 2),
+        final_balance_nominal=final,
+        final_balance_real=_whole_dollars(balance / deflator),
+        total_contributed=contributed,
+        # From the rounded parts, so the three add up to the dollar.
+        total_growth=final - _whole_dollars(starting_balance) - contributed,
         years=years,
         yearly_balances=yearly,
     )
@@ -197,15 +210,16 @@ def required_monthly_contribution(
     starting_balance: float,
     years: int,
     annual_return: float,
-) -> float:
+) -> int:
     """Solve for the monthly contribution needed to reach ``target_amount``.
 
     Inverts the ordinary-annuity future-value formula::
 
         FV = PV(1+r)^n + PMT * [((1+r)^n - 1) / r]
 
-    Returns ``0.0`` when the starting balance already compounds past the target
-    on its own.
+    Returns ``0`` when the starting balance already compounds past the target
+    on its own. Rounded *up* to the dollar, unlike the other estimates: a
+    required amount rounded down would fall short of the target it was solved for.
     """
     _check_non_negative("target_amount", target_amount)
     _check_non_negative("starting_balance", starting_balance)
@@ -218,11 +232,10 @@ def required_monthly_contribution(
     grown = starting_balance * (1.0 + r) ** n
     shortfall = target_amount - grown
     if shortfall <= 0:
-        return 0.0
-    if r == 0:
-        return round(shortfall / n, 2)
-    annuity_factor = ((1.0 + r) ** n - 1.0) / r
-    return round(shortfall / annuity_factor, 2)
+        return 0
+    payment = shortfall / n if r == 0 else shortfall / (((1.0 + r) ** n - 1.0) / r)
+    # Rounded to the cent first, so float noise (1654.0000000001) cannot add a dollar.
+    return math.ceil(round(payment, 2))
 
 
 @dataclass
@@ -493,7 +506,7 @@ def withdrawal_sustainability(
     balance = float(portfolio_value)
     withdrawal = float(annual_withdrawal)
     depleted_year: int | None = None
-    path: list[dict[str, float]] = []
+    path: list[dict[str, int]] = []
 
     for year in range(1, years + 1):
         if depleted_year is None:
@@ -504,17 +517,17 @@ def withdrawal_sustainability(
                 # meaningless large negative "balance".
                 depleted_year = year
                 balance = 0.0
-        path.append({"year": year, "balance": round(balance, 2)})
+        path.append({"year": year, "balance": _whole_dollars(balance)})
         withdrawal *= 1.0 + annual_inflation
 
     initial_rate = annual_withdrawal / portfolio_value if portfolio_value else 0.0
     return {
         "survives_horizon": depleted_year is None,
         "depleted_in_year": depleted_year,
-        "ending_balance": round(balance, 2),
+        "ending_balance": _whole_dollars(balance),
         "initial_withdrawal_rate": round(initial_rate, 4),
-        "first_year_annual_withdrawal": round(annual_withdrawal, 2),
-        "first_year_monthly_withdrawal": round(annual_withdrawal / 12, 2),
+        "first_year_annual_withdrawal": _whole_dollars(annual_withdrawal),
+        "first_year_monthly_withdrawal": _whole_dollars(annual_withdrawal / 12),
         "yearly_path": path,
         "caveat": (
             "Deterministic single-path projection. Ignores sequence-of-returns "
@@ -589,30 +602,33 @@ def compare_fees(
     alternative, alternative_fees = _grow_net_of_fee(
         **common, expense_ratio=alternative_expense_ratio
     )
+    # Rounded once, and every difference taken from the rounded figures, so
+    # the gap below is exactly the fee difference plus the lost growth.
+    current, current_fees = _whole_dollars(current), _whole_dollars(current_fees)
+    alternative, alternative_fees = _whole_dollars(alternative), _whole_dollars(alternative_fees)
     return {
         "years": years,
-        "total_contributed": round(monthly_contribution * 12 * years, 2),
+        "total_contributed": _whole_dollars(monthly_contribution * 12 * years),
         "current": {
             "expense_ratio": current_expense_ratio,
             "net_annual_return": round(gross_annual_return - current_expense_ratio, 6),
-            "ending_balance": round(current, 2),
-            "total_fees_paid": round(current_fees, 2),
+            "ending_balance": current,
+            "total_fees_paid": current_fees,
         },
         "alternative": {
             "expense_ratio": alternative_expense_ratio,
             "net_annual_return": round(gross_annual_return - alternative_expense_ratio, 6),
-            "ending_balance": round(alternative, 2),
-            "total_fees_paid": round(alternative_fees, 2),
+            "ending_balance": alternative,
+            "total_fees_paid": alternative_fees,
         },
         # Signed, and named for the direction: negative when the alternative
         # is the dearer fund, so no sign has to be inferred from the prose.
-        "alternative_ending_balance_higher_by": round(alternative - current, 2),
-        "alternative_fees_lower_by": round(current_fees - alternative_fees, 2),
+        "alternative_ending_balance_higher_by": alternative - current,
+        "alternative_fees_lower_by": current_fees - alternative_fees,
         # The rest of the gap: what the fee money would have earned. Answers
         # explain the gap as fees plus this, so it is returned, not subtracted.
-        "growth_lost_on_the_fee_difference": round(
-            (alternative - current) - (current_fees - alternative_fees), 2
-        ),
+        "growth_lost_on_the_fee_difference": (alternative - current)
+        - (current_fees - alternative_fees),
         "assumptions": [
             "Each expense ratio comes off the gross annual return before it is "
             "converted to a monthly rate.",

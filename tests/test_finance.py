@@ -55,7 +55,8 @@ class TestProjectPortfolio:
             annual_return=0.07,
             annual_inflation=0.0,
         )
-        assert result.final_balance_nominal == pytest.approx(10_000 * 1.07**10, abs=0.05)
+        # Whole dollars: an estimate carries no cents (finance.py's conventions).
+        assert result.final_balance_nominal == pytest.approx(10_000 * 1.07**10, abs=0.5)
 
     def test_zero_inflation_leaves_real_equal_to_nominal(self):
         result = project_portfolio(
@@ -130,7 +131,16 @@ class TestRequiredContribution:
             annual_return=rate,
             annual_inflation=0.0,
         )
-        assert projected.final_balance_nominal == pytest.approx(target, rel=1e-4)
+        # Rounded up to the dollar, so it reaches the target and overshoots by
+        # no more than an extra dollar a month would grow to.
+        one_dollar_a_month = project_portfolio(
+            starting_balance=0,
+            monthly_contribution=1,
+            years=years,
+            annual_return=rate,
+            annual_inflation=0.0,
+        ).final_balance_nominal
+        assert target <= projected.final_balance_nominal <= target + one_dollar_a_month
 
     def test_returns_zero_when_already_on_track(self):
         pmt = required_monthly_contribution(
