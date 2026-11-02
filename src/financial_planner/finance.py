@@ -369,6 +369,9 @@ def payoff_debts(
     total_interest = 0.0
     order: list[dict] = []
     month = 0
+    # What each debt was paid last month: a cleared debt's last full payment is
+    # what rolls to the next target ("add the card's $630 to the car loan").
+    last_month: dict[str, float] = {}
 
     while any(d.balance > 0.005 for d in working) and month < _MAX_MONTHS:
         month += 1
@@ -380,6 +383,7 @@ def payoff_debts(
                 total_interest += interest
 
         budget = monthly_budget
+        paid: dict[str, float] = {}
 
         # Minimums first, capped at the outstanding balance.
         for d in working:
@@ -388,6 +392,7 @@ def payoff_debts(
             pay = min(d.minimum, d.balance, budget)
             d.balance -= pay
             budget -= pay
+            paid[d.name] = paid.get(d.name, 0.0) + pay
 
         # Everything left goes to the target debt, and cascades onward the
         # moment that debt clears. This is what makes both strategies
@@ -413,12 +418,23 @@ def payoff_debts(
             pay = min(budget, target.balance)
             target.balance -= pay
             budget -= pay
+            paid[target.name] = paid.get(target.name, 0.0) + pay
 
         for d in working:
             if 0 < d.balance <= 0.005:
                 d.balance = 0.0  # absorb float dust
             if d.balance == 0.0 and not any(o["name"] == d.name for o in order):
-                order.append({"name": d.name, "paid_off_month": month})
+                # The final month's payment is only the remainder, so the full
+                # one is the month before -- unless it cleared in month 1.
+                full = last_month.get(d.name, paid.get(d.name, 0.0))
+                order.append(
+                    {
+                        "name": d.name,
+                        "paid_off_month": month,
+                        "monthly_payment_before_payoff": round(full, 2),
+                    }
+                )
+        last_month = paid
 
     # Test the balances, not the counter. A plan whose final payment lands
     # exactly on month _MAX_MONTHS has cleared, and reporting it as impossible

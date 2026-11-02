@@ -365,7 +365,10 @@ class TestGuardsFoundByReview:
         # Month 1: interest takes B to 10,200; minimums (10 + 50) and then the
         # whole 940 leftover -- 90 clearing A, 850 cascading to B -- leave B at
         # 10,200 - 50 - 850 = 9,300. Stranding the 850 would leave it at 10,150.
-        assert result.payoff_order[0] == {"name": "A", "paid_off_month": 1}
+        assert {k: result.payoff_order[0][k] for k in ("name", "paid_off_month")} == {
+            "name": "A",
+            "paid_off_month": 1,
+        }
         assert result.months_to_debt_free == 12
 
     def test_payoff_cascade_still_respects_strategy_ordering(self):
@@ -445,3 +448,34 @@ class TestSumAmounts:
     def test_needs_two_amounts(self):
         with pytest.raises(ValueError, match="at least two"):
             sum_amounts([("a", 1.0)])
+
+
+class TestDebtRollover:
+    """The payment a cleared debt frees is what an answer tells the user to
+    move to the next one; the model added minimum and extra to state it."""
+
+    DEBTS = [
+        {"name": "card", "balance": 8_400, "apr": 0.229, "minimum_payment": 210},
+        {"name": "car", "balance": 14_200, "apr": 0.064, "minimum_payment": 340},
+        {"name": "student", "balance": 21_000, "apr": 0.045, "minimum_payment": 230},
+    ]
+
+    def test_each_debt_reports_the_payment_that_rolls_over(self):
+        """The debt scenario's figures: $210 + $420 extra, then + $340."""
+        order = payoff_debts(debts=self.DEBTS, monthly_budget=1_200).payoff_order
+        assert [d["monthly_payment_before_payoff"] for d in order] == [630, 970, 1_200]
+
+    def test_a_debt_cleared_by_its_minimum_reports_the_minimum(self):
+        """Never the target, so a budget-minus-minimums formula would be wrong."""
+        debts = [
+            {"name": "big", "balance": 10_000, "apr": 0.25, "minimum_payment": 100},
+            {"name": "tiny", "balance": 150, "apr": 0.01, "minimum_payment": 50},
+        ]
+        order = payoff_debts(debts=debts, monthly_budget=600).payoff_order
+        tiny = next(d for d in order if d["name"] == "tiny")
+        assert tiny["monthly_payment_before_payoff"] == 50
+
+    def test_a_debt_cleared_in_month_one_reports_what_it_was_paid(self):
+        debts = [{"name": "small", "balance": 100, "apr": 0.0, "minimum_payment": 25}]
+        order = payoff_debts(debts=debts, monthly_budget=500).payoff_order
+        assert order[0]["monthly_payment_before_payoff"] == 100
