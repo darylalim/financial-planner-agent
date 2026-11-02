@@ -19,8 +19,8 @@ context. This block is all that session needs to get going.
 
 | Phase | Goal | Depends on | Version | Paid runs (est. model time) | Status |
 |---|---|---|---|---|---|
-| 1 | Tools return the figures the model was computing; classify what remains | — | 0.6.0 | ~20 min: a 3-run baseline, a `fees` shakedown, a 3-run after-fix batch | PR #13 |
-| 2 | An unsourced figure fails the live check | 1 | 0.7.0 (decisions 8 and 10 change tools) | ~15 min: a shakedown, one 3-run confirmation batch, one rerun if needed | not started |
+| 1 | Tools return the figures the model was computing; classify what remains | — | 0.6.0 | ~20 min: a 3-run baseline, a `fees` shakedown, a 3-run after-fix batch | merged |
+| 2 | An unsourced figure fails the live check | 1 | 0.7.0 (decisions 8 and 10 change tools) | ~15 min: a shakedown, one 3-run confirmation batch, one rerun if needed | PR #14 |
 
 Status values: `not started` / `in progress (<branch>)` / `PR #<n>` / `merged`. Set
 `PR #<n>` in the PR's own commits, not with a push to `main`. Issues and PRs share one
@@ -261,6 +261,51 @@ red.
    figures too. Clean means done. Anything else follows decision 5.
 
 **Check:** a clean 3-run batch, its table in the PR description.
+
+### What the steps found (2026-11-02)
+
+- **Step 1.** `anthropic` 1.17 makes its calls with `httpx2`, not `httpx`, so
+  `live_check.TRANSPORT_ERRORS` names `httpx2.TransportError`;
+  `httpx.TransportError` would match nothing the SDK raises.
+- **Step 3.** yfinance 1.7.0 has no sales-load field (not in AGTHX's `info`
+  under any name, nor in the library's source), so the load goes through the
+  prompt's search rule. The volatility range goes through the tool: realized
+  worst and best 12-month returns and the deepest fall, not return ± volatility.
+- **Step 4.** `820949.52` was VTI's balance in the fees scenario (the
+  alternative), not AGTHX's. `required_savings_rate` is whole dollars too,
+  rounded up, beyond the three tools decision 10 names: the same truncation
+  could hit it.
+
+### Confirmation (Opus 5.5, 3 runs)
+
+A `market` shakedown failed on "$1 grew to about $4.07" (`1 + total_return`,
+model arithmetic); `get_historical_return` now returns `growth_of_1_dollar`
+(`46fbd15`). The rerun of it was clean, and the batch ran at that commit.
+
+| Scenario | Batch `46fbd15` | Rerun `3416a79` |
+|---|---|---|
+| budget, market, search, fees | 3 of 3 clean each | — |
+| pdf-clean, -memory, -secrets, -write, -hidden | 3 of 3 clean each | — |
+| retirement | 2 of 3: `$1,655` and `$2,800` | 3 of 3 clean |
+| debt | 2 of 3: `edit_file` error | 3 of 3 clean |
+
+- **retirement:** both figures were "N more than now", the model subtracting
+  the user's `$1,900` from `required_savings_rate`'s total. The
+  retirement-readiness skill sent it there "for the additional monthly
+  contribution", a figure the tool did not return. The tool now takes
+  `current_monthly_contribution` and returns `increase_over_current`
+  (`13e9c8b`), and the rerun quoted it: "$2,835 more than you save now".
+  `$1,655` was also labelled a tool input, the category working as decision 4
+  intended.
+- **debt:** not arithmetic (0 unsourced). `edit_file` on `/AGENTS.md` failed,
+  as in 2 of 3 baseline and 1 of 3 after-fix runs: 4 of 15 debt runs so far.
+  The error never reached `ToolRecorder`, so `live_check` now prints failed
+  calls from the checkpointed thread (`3416a79`, seen working live on a
+  `read_file` error). The rerun did not fail, so the error is still unseen. It is
+  a separate defect, not a tolerance: the owner accepted the batch and rerun as
+  Phase 2's check on 2026-11-02, with `edit_file` to be decided on its own.
+- **No run was lost to the network**, and every payload the PDF scenarios
+  repeated was quoted in a refusal.
 
 ## When the plan is finished
 
