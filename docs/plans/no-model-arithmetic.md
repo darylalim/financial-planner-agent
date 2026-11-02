@@ -173,6 +173,40 @@ Seen in the baseline but not counted:
   (the agent's `/AGENTS.md` update). Three `edit_file` calls ran, but only the two
   successes were recorded, so the log does not show the failure's text.
 
+### After-fix batch (2026-11-02, Opus 5.5, 3 runs, `626d742`)
+
+| Scenario | Baseline | After | Change |
+|---|---|---|---|
+| budget | 0 | 0 | — |
+| debt | 0 | 1 | `$630` (see below) |
+| market | 4 | 6 | prompt defaults, plus two recalled figures |
+| search | 2 | **0** | `add_amounts` ran in 3 of 3 |
+| retirement | 9 | 20 | earlier-turn restatements (13 of the 20) |
+| fees | — | 3 | new scenario |
+
+30 figures, by class:
+
+| Class | Count | Figures |
+|---|---|---|
+| **model arithmetic** | 2 | debt `$630` (card's $210 minimum + $420 extra, rolled to the car loan); fees "the other ~$41,000" (balance gap − fee gap). Both fixed after the batch, in `9ff1676` and `b393c7d`: the tools now return the figure. |
+| prompt default | 10 | market `7%` (4), retirement `2.5%` (6) |
+| earlier turn | 13 | retirement turn 2 restating turn 1's tool outputs: `$1.63M`, `$1.13M`, `$1,625,950`, `$1,126,469`, `4.8%`, `$1,654`, `$1,900`; and `$1,392,560` / `$1,010,100`, turn 1's `yearly_balances` row for year 21 (age 62) |
+| tool input | 1 | retirement `$3,500/month`, a contribution the model tried (probable: `live_check` does not print tool arguments) |
+| other | 4 | fees `5.75%`, AGTHX's sales charge from the model's own knowledge; market "swings of 20–30%" from an 18% volatility (2); fees `$820,949`, the tool's `820949.52` **truncated** rather than rounded |
+
+The batch ran in two parts. A `Connection reset by peer` during the first debt run
+killed the process, and with it every result already collected: `run_scenario` has no
+per-run error handling. budget's three runs had finished and are kept.
+
+Open for Phase 2, beyond decision 3:
+- **Recalled facts** (`5.75%`, "20–30%") are not arithmetic, but decision 5 fails a run
+  on them. Either the model sources them (`search_web`) or the checker reports them as
+  their own class. That is a scoping decision for the owner.
+- **A dropped connection** should be its own outcome, neither clean nor a defect, so one
+  network error neither fails nor loses a confirmation batch.
+- **Truncation** is the model's rounding, and accepting it would let every figure match
+  two values. Kept unsourced.
+
 ## Phase 2: an unsourced figure fails the live check
 
 **Goal:** a model or prompt change that breaks the arithmetic rule turns the live check
