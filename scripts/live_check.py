@@ -110,6 +110,7 @@ from financial_planner.config import (  # noqa: E402
     TAVILY_API_KEY,
     missing_required_keys,
 )
+from financial_planner.prompts import PROMPT_DEFAULT_PERCENTS  # noqa: E402
 from financial_planner.streaming import (  # noqa: E402
     Token,
     ToolEnd,
@@ -423,6 +424,10 @@ def run_scenario(name: str, turns: list[str], model: str) -> RunResult:
 
     run_started = time.time()
     ran_anywhere: set[str] = set()
+    # The conversation so far, for the unsourced-figure check: a figure restated
+    # from an earlier turn is sourced by that turn's user message or tool output.
+    said: list[str] = []
+    outputs_so_far: list[str] = []
     for i, prompt in enumerate(turns, 1):
         print(f"\n--- turn {i} ---\n> {prompt}\n")
         started = time.time()
@@ -475,10 +480,10 @@ def run_scenario(name: str, turns: list[str], model: str) -> RunResult:
 
         ran_anywhere.update(call.name for call in recorder.calls)
         delegated = [f"{c.name} ({c.agent})" for c in recorder.calls if c.agent != agent.name]
-        # Reported, not failed: the Phase 0 run calibrates the false-positive
-        # rate (a figure fairly restated from an earlier turn is flagged), and
-        # whether this becomes a failure is decided once that rate is known.
-        unsourced = unsourced_figures(answer, [c.output for c in recorder.calls], prompt)
+        # Reported, not failed, until Phase 2 step 5 of the plan makes it fail.
+        said.append(prompt)
+        outputs_so_far.extend(c.output for c in recorder.calls)
+        unsourced = unsourced_figures(answer, outputs_so_far, said, PROMPT_DEFAULT_PERCENTS)
         result.unsourced += len(unsourced)
 
         print(f"\n  tools: {tools}")
