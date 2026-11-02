@@ -82,7 +82,28 @@ about *where* a number is computed, not which module computes it. Ratios count �
 savings rate or category share is returned by `summarize_spending`, which is why those
 keys exist. The rule is enforced at runtime by `SYSTEM_PROMPT` in `prompts.py`
 ("# The arithmetic rule (non-negotiable)"), so **a new tool returning a new kind of
-figure needs the prompt extended too** — the tool alone does not enforce it.
+figure needs the prompt extended too** — the tool alone does not enforce it. A skill is
+held to the same rule: one that names a figure must name the field that returns it. The
+retirement skill promised "the additional monthly contribution" from a tool that
+returned only the total, and the model subtracted to fill the gap.
+
+**Estimates are whole dollars; amounts that must match a statement keep cents.**
+`finance.py`'s module docstring has the split. Differences are taken from the rounded
+figures, so a fee gap still equals its parts. Putting cents back on an estimate brings
+back the truncation (`820949.52` shown as `$820,949`) that the live check fails as a
+figure no tool produced.
+
+**The live check fails a run on any unsourced figure, with no tolerance.** README → The
+live check says what counts as sourced. The prompt's stated defaults are among the
+sources, read from `prompts.PROMPT_DEFAULT_PERCENTS`, so change a default there, never in
+the prompt's prose. A value the model passed *into* a tool is never a source: a figure it
+computed and then handed to a calculator is still its own arithmetic. Every source the
+checker accepts is a hole in the check. **Read an unsourced
+figure before writing a rule for it**: every one found so far was a tool that did not
+return a figure people ask for, fixed in the tool. Add a source to
+`scripts/answer_checks.py` only with a test built from a recorded example of the figure
+it legitimately covers. The check sees only `$` and `%` figures, so an age the model
+worked out ("about nine years before 95") passes it.
 
 **Annual→monthly rate conversion is done two ways on purpose.** Investment returns use
 the geometric `(1+r)^(1/12)−1`; debt uses `APR/12`, the convention US lenders quote.
@@ -304,6 +325,10 @@ passing tests are not enough on their own.
   new node once ran `recursion_limit` out a quarter sooner); which extensions `read_file`
   opens as multimodal (relevant to `PDF_READ_DENY`); and where eviction and summarization
   write. Then run the live check: two regressions only showed up live.
+- **Check which HTTP client `anthropic` raises from.** `live_check.TRANSPORT_ERRORS`
+  names `httpx2` because `anthropic` 1.17 makes its calls with it, not `httpx`. If the SDK
+  moves, a dropped connection crashes the batch instead of being reported as *not run*,
+  and the offline tests cannot tell.
 - **Put a `ruff` bump in one mechanical commit with the lock**, formatting applied to the
   whole repo, before hand-editing any `.py`. Otherwise the hook scatters the new
   formatting through unrelated diffs. Don't force a package past another package's cap.
