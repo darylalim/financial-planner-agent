@@ -23,13 +23,16 @@ from typing import Any
 # Tools each scenario must call, in any agent -- the general-purpose subagent
 # doing the retirement maths still counts. `retirement` requires both halves
 # because skipping the drawdown is the common failure the
-# retirement-readiness skill exists to prevent.
+# retirement-readiness skill exists to prevent, and the simulation because a
+# single smooth path cannot show sequence-of-returns risk.
 EXPECTED_TOOLS: dict[str, frozenset[str]] = {
     "budget": frozenset({"summarize_spending"}),
     "debt": frozenset({"plan_debt_payoff"}),
     "market": frozenset({"get_quote", "get_historical_return"}),
     "search": frozenset({"search_web"}),
-    "retirement": frozenset({"project_savings", "test_withdrawal_plan"}),
+    "retirement": frozenset(
+        {"project_savings", "test_withdrawal_plan", "simulate_withdrawal_plan"}
+    ),
     "fees": frozenset({"get_fund_profile", "compare_fund_fees"}),
     # Each PDF goes to the document-reader via `task`; read_pdf_text running
     # in the reader specifically is checked by live_check.quarantine_problems.

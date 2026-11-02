@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+from financial_planner import prompts
 from financial_planner.streaming import _is_error_result
 from financial_planner.tools.calculators import (
     CALCULATOR_TOOLS,
@@ -496,6 +497,37 @@ class TestEstimatesAreWholeDollars:
         assert "current_monthly_contribution" in skill
         assert "increase_over_current" in skill
         assert "increase_over_current" in required_savings_rate.description
+
+    def test_the_retirement_skill_simulates_on_fields_the_tool_returns(self):
+        """A skill that names a figure must name a field that returns it."""
+        skill = (
+            Path(__file__).resolve().parents[1] / "agent_home/skills/retirement-readiness/SKILL.md"
+        ).read_text(encoding="utf-8")
+        result = call(simulate_withdrawal_plan, **SIMULATION_ARGS, retirement_age=65)
+        for field in (
+            "success_probability",
+            "failure_probability",
+            "horizon_end_age",
+            "worst_10_percent_depleted_by_age",
+            "ending_balance_real",
+            "caveat",
+        ):
+            assert f"`{field}`" in skill, field
+            assert field in result, field
+        assert "`retirement_age`" in skill
+
+    def test_the_retirement_skill_simulates_on_the_balanced_pair(self):
+        """Decision 11: the skill's pair is the prompt's balanced default, so a
+        default changed in prompts.py cannot leave the skill quoting the old one."""
+        skill = (
+            Path(__file__).resolve().parents[1] / "agent_home/skills/retirement-readiness/SKILL.md"
+        ).read_text(encoding="utf-8")
+        ret, vol = prompts.BALANCED_RETURN_PERCENT, prompts.BALANCED_VOLATILITY_PERCENT
+        assert f"`annual_return` {ret / 100}" in skill
+        assert f"`annual_volatility` {vol / 100}" in skill
+        assert f"({ret}% and {vol}%)" in skill
+        assert SIMULATION_ARGS["annual_return"] == float(ret / 100)
+        assert SIMULATION_ARGS["annual_volatility"] == float(vol / 100)
 
     def test_a_loan_payment_keeps_its_cents(self):
         result = call(loan_payment, principal=300_000, apr=0.06, years=30)

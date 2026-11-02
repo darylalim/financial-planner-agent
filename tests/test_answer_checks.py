@@ -231,10 +231,18 @@ class TestExpectedTools:
             assert expected <= names, scenario
 
     def test_a_tool_that_ran_in_any_agent_counts(self):
-        assert checks.missing_tools("retirement", ["project_savings", "test_withdrawal_plan"]) == []
+        ran = ["project_savings", "test_withdrawal_plan", "simulate_withdrawal_plan"]
+        assert checks.missing_tools("retirement", ran) == []
 
     def test_a_missing_tool_is_reported(self):
-        assert checks.missing_tools("retirement", ["project_savings"]) == ["test_withdrawal_plan"]
+        ran = ["project_savings", "simulate_withdrawal_plan"]
+        assert checks.missing_tools("retirement", ran) == ["test_withdrawal_plan"]
+
+    def test_a_retirement_answer_without_a_simulation_fails(self):
+        """The one-path answer the retirement skill used to give, before it
+        reported a probability."""
+        ran = ["project_savings", "test_withdrawal_plan"]
+        assert checks.missing_tools("retirement", ran) == ["simulate_withdrawal_plan"]
 
     def test_a_scenario_with_no_expectation_requires_nothing(self):
         assert checks.missing_tools("not-a-scenario", []) == []

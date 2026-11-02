@@ -1,6 +1,6 @@
 ---
 name: retirement-readiness
-description: Run a full retirement readiness assessment - projecting a portfolio to a target retirement age, testing whether the drawdown is sustainable, and quantifying any gap. Use when the user asks whether they can retire, when they can retire, whether they are on track, or how much they need.
+description: Run a full retirement readiness assessment - projecting a portfolio to a target retirement age, testing whether the drawdown is sustainable, simulating how likely it is to last, and quantifying any gap. Use when the user asks whether they can retire, when they can retire, whether they are on track, or how much they need.
 ---
 
 # Retirement readiness assessment
@@ -10,7 +10,9 @@ description: Run a full retirement readiness assessment - projecting a portfolio
 A readiness assessment answers one question — *does the projected balance
 support the intended spending?* — and it takes two separate tool calls to
 answer, not one. Accumulation and drawdown are different calculations, and
-skipping the second is the most common way this analysis goes wrong.
+skipping the second is the most common way this analysis goes wrong. A third
+call then gives the drawdown a probability, because one smooth path cannot show
+what bad years early in retirement do.
 
 ## When to use
 
@@ -57,7 +59,32 @@ Take `final_balance_nominal` from step 2 into `test_withdrawal_plan`:
   inflation.
 - `years` = 95 − retirement age, so the plan survives a long life
 
-### 4. Quantify any gap
+### 4. Simulate the drawdown
+
+Call `simulate_withdrawal_plan` **once**, not once per projection, with the
+portfolio, withdrawal and `years` from the step-3 test on the 5% projection.
+Pass `retirement_age` so depletion comes back as ages.
+
+Unless the user named their holdings, use the balanced pair from your
+assumptions: `annual_return` 0.05 and `annual_volatility` 0.11 (5% and 11%),
+and say so. If they did name a holding, take `annual_volatility` from
+`get_historical_return` on it.
+
+The figures to quote, each from the field named:
+
+- `success_probability`, written as a percentage, as "the money lasted to
+  <`horizon_end_age`> in <`success_probability`> of simulated markets" --
+  never as a chance that the person will be fine. If you give the chance of
+  running out, it is `failure_probability`, not 100 minus the success figure
+- `worst_10_percent_depleted_by_age`, if it is not null, as the age by which
+  the money ran out in the worst tenth of markets
+- The `ending_balance_real` median, if you give a typical ending balance
+
+Relay the `caveat` it returns: this is a model, not a forecast, and running out
+in a simulated market means spending would have had to be cut, not that
+nothing is left.
+
+### 5. Quantify any gap
 
 If the drawdown fails, do not stop at "you are short". Call
 `required_savings_rate` with the user's current contribution as
@@ -66,13 +93,13 @@ If the drawdown fails, do not stop at "you are short". Call
 order of impact — typically: retire later, save more,
 spend less. Give the number attached to each.
 
-### 5. Report
+### 6. Report
 
 Lead with the verdict in one sentence. Then:
 
 - Both projections (7% and 5%), nominal and real
 - Whether the drawdown survives, and the initial withdrawal rate
-- The sequence-of-returns caveat from `test_withdrawal_plan`, in your own words
+- The probability from step 4, worded as step 4 says, with its volatility
 - Every assumption used
 
 Write the full analysis to `/workspace/retirement-readiness-<YYYY-MM-DD>.md`
@@ -83,5 +110,7 @@ and update `/AGENTS.md` with the goal, target date, and current trajectory.
 - Do not present a single point estimate as the answer. The rate assumption
   dominates the output, so one number implies a precision that does not exist.
 - Do not skip step 3. A large balance is not a sustainable plan.
+- Do not simulate both projections. Two probabilities beside the 7%/5% spread
+  bury the verdict; the 5% one is the conservative test.
 - Do not recommend specific funds, allocations, or account types. Explain the
   tradeoff and point to a fee-only fiduciary for the decision.
