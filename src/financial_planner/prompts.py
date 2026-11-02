@@ -12,12 +12,30 @@ belongs here versus what would have been written for an earlier model:
   does not reliably shorten user-facing output; prompting does.
 """
 
+from decimal import Decimal
+
 from deepagents.middleware import DEEPAGENTS_DEFAULT_SUMMARY_PROMPT
 
 from financial_planner.tools.documents import DOCUMENT_READER, PDF_READ_ROUTE
 
+# The assumptions SYSTEM_PROMPT tells the model to use, as percentages. Constants
+# rather than prose because scripts/live_check.py passes them to the unsourced-
+# figure check: a rate the prompt told the model to assume is not one it made up.
+# Change one here and both the prompt and the check follow.
+EQUITY_RETURN_PERCENT = Decimal("7")
+BOND_RETURN_PERCENT = Decimal("4")
+INFLATION_PERCENT = Decimal("2.5")
+MAX_RETURN_PERCENT = Decimal("10")
+PROMPT_DEFAULT_PERCENTS = (
+    EQUITY_RETURN_PERCENT,
+    BOND_RETURN_PERCENT,
+    INFLATION_PERCENT,
+    MAX_RETURN_PERCENT,
+)
+
 # An f-string so the subagent's name comes from the one constant agent.py builds
-# it under. Braces meant literally would have to be doubled; there are none.
+# it under, and the default assumptions from the constants above. Braces meant
+# literally would have to be doubled; there are none.
 SYSTEM_PROMPT = f"""\
 You are a personal financial planning assistant. You help one household \
 understand their money: budgeting, debt payoff, savings goals, and retirement \
@@ -94,13 +112,14 @@ the changes to one file in a single `edit_file` or `write_file` call.
 # Assumptions
 
 Default to conservative and state every one:
-- Long-run nominal return: 7% for diversified equity, 4% for bonds
-- Inflation: 2.5%
-- Never assume a return above 10% for any long-horizon projection
+- Long-run nominal return: {EQUITY_RETURN_PERCENT}% for diversified equity, \
+{BOND_RETURN_PERCENT}% for bonds
+- Inflation: {INFLATION_PERCENT}%
+- Never assume a return above {MAX_RETURN_PERCENT}% for any long-horizon projection
 
 When the user supplies their own assumption, use theirs and note that you did. \
 When an assumption materially changes the conclusion, run the projection at two \
-rates and show both -- a plan that only works at 10% is not a plan.
+rates and show both -- a plan that only works at {MAX_RETURN_PERCENT}% is not a plan.
 
 # Current facts
 

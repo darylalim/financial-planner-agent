@@ -129,23 +129,66 @@ def _numbers_in_json(value: Any) -> Iterator[Decimal]:
             yield from _numbers_in_json(item)
 
 
-def source_numbers(tool_outputs: Iterable[str], user_message: str) -> set[Decimal]:
-    """Every number a turn's figures may legitimately come from.
+# A number the user wrote as a percentage: "7%", "7 %", "7 percent".
+_USER_PERCENT = re.compile(r"(?P<num>\d+(?:\.\d+)?)\s?(?:%|percent\b)")
+
+
+@dataclass(frozen=True)
+class Sources:
+    """What a figure may legitimately come from, split by the kind of figure.
+
+    ``dollars`` sources a dollar amount; ``percents`` a percentage. They differ
+    on purpose: a bare number in the user's text ("the last 10 years") sources
+    a dollar amount, but sourced a percentage too, so the prompt's own "never
+    above 10%" passed on a coincidence. A percentage now needs a tool value (as
+    itself or as a fraction), a number the user wrote as a percentage, or one of
+    the prompt's stated defaults.
+    """
+
+    dollars: frozenset[Decimal]
+    percents: frozenset[Decimal]
+
+
+def _tool_numbers(output: str) -> list[Decimal]:
+    try:
+        return list(_numbers_in_json(json.loads(output)))
+    except (json.JSONDecodeError, TypeError):
+        return list(_numbers_in_text(output))
+
+
+def source_numbers(
+    tool_outputs: Iterable[str],
+    user_messages: Iterable[str],
+    defaults: Iterable[Decimal] = (),
+) -> Sources:
+    """Every number the conversation so far gives a figure to come from.
+
+    ``tool_outputs`` and ``user_messages`` cover every turn so far, not just the
+    current one: a figure restated from an earlier turn has a source, the
+    earlier turn's. ``defaults`` are the prompt's stated assumptions, as
+    percentages (``prompts.PROMPT_DEFAULT_PERCENTS``); they source percentages
+    only. Tool *inputs* are never a source (plan decision 4): a value the model
+    computed and passed to a tool is still the model's arithmetic.
 
     A tool output that parses as JSON is walked recursively, so a figure in a
     nested payload counts; one that does not (a file read, an error string) is
     scanned as text. Stored as absolute values: a statement's outflows are
     negative, and an answer says "you spend $2,390.80", not "-$2,390.80".
     """
-    numbers: set[Decimal] = set()
-    for output in tool_outputs:
-        try:
-            found = list(_numbers_in_json(json.loads(output)))
-        except (json.JSONDecodeError, TypeError):
-            found = list(_numbers_in_text(output))
-        numbers.update(abs(n) for n in found)
-    numbers.update(abs(n) for n in _numbers_in_text(user_message))
-    return numbers
+    if isinstance(user_messages, str):
+        # A str is an Iterable[str] of characters: every digit would be a source.
+        raise TypeError("user_messages is a list of messages, not one string")
+    tool = {abs(n) for output in tool_outputs for n in _tool_numbers(output)}
+    user_bare: set[Decimal] = set()
+    user_percent: set[Decimal] = set()
+    for message in user_messages:
+        user_bare.update(abs(n) for n in _numbers_in_text(message))
+        user_percent.update(Decimal(m["num"]) for m in _USER_PERCENT.finditer(message))
+    return Sources(
+        dollars=frozenset(tool | user_bare),
+        # A tool returns rates as fractions (0.07) while answers show 7%.
+        percents=frozenset(tool | {n * 100 for n in tool} | user_percent | set(defaults)),
+    )
 
 
 def _round_to(value: Decimal, quantum: Decimal) -> Decimal:
@@ -169,24 +212,24 @@ def _coarser_quanta(figure: Figure) -> list[Decimal]:
     return quanta
 
 
-def is_sourced(figure: Figure, sources: set[Decimal]) -> bool:
-    """Whether some source, rounded as the figure is displayed, equals it.
-
-    A percentage also matches a fraction (0.07 is 7%), since tools return rates
-    as fractions while answers show percentages.
-    """
-    for source in sources:
-        candidates = [source, source * 100] if figure.is_percent else [source]
-        for candidate in candidates:
-            for quantum in _coarser_quanta(figure):
-                if _round_to(candidate, quantum) == _round_to(figure.value, quantum):
-                    return True
-    return False
+def is_sourced(figure: Figure, sources: Sources) -> bool:
+    """Whether some source of the figure's kind, rounded as it is displayed, equals it."""
+    pool = sources.percents if figure.is_percent else sources.dollars
+    return any(
+        _round_to(candidate, quantum) == _round_to(figure.value, quantum)
+        for candidate in pool
+        for quantum in _coarser_quanta(figure)
+    )
 
 
-def unsourced_figures(answer: str, tool_outputs: Iterable[str], user_message: str) -> list[str]:
-    """The figures in ``answer`` that neither a tool result nor the user supplied."""
-    sources = source_numbers(tool_outputs, user_message)
+def unsourced_figures(
+    answer: str,
+    tool_outputs: Iterable[str],
+    user_messages: Iterable[str],
+    defaults: Iterable[Decimal] = (),
+) -> list[str]:
+    """The figures in ``answer`` that no tool, user message or prompt default supplied."""
+    sources = source_numbers(tool_outputs, user_messages, defaults)
     return [f.text for f in answer_figures(answer) if not is_sourced(f, sources)]
 
 

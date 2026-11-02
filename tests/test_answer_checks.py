@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from financial_planner.prompts import PROMPT_DEFAULT_PERCENTS, SYSTEM_PROMPT
 from financial_planner.tools import ALL_TOOLS, READER_TOOLS
 
 _PATH = Path(__file__).resolve().parents[1] / "scripts" / "answer_checks.py"
@@ -27,9 +28,29 @@ sys.modules["answer_checks"] = checks
 _spec.loader.exec_module(checks)
 
 
-def _unsourced(answer: str, *tool_payloads: object, user: str = "") -> list[str]:
+def _unsourced(
+    answer: str,
+    *tool_payloads: object,
+    user: str = "",
+    earlier: tuple[str, ...] = (),
+    defaults: tuple[Decimal, ...] = (),
+) -> list[str]:
     outputs = [p if isinstance(p, str) else json.dumps(p) for p in tool_payloads]
-    return checks.unsourced_figures(answer, outputs, user)
+    said = [*earlier, user] if user else list(earlier)
+    return checks.unsourced_figures(answer, outputs, said, defaults)
+
+
+# Recorded scenario wording (scripts/live_check.py SCENARIOS), so these examples
+# are the ones Phase 1's batches actually produced.
+RETIREMENT_TURN_1 = (
+    "I'm 41, want to retire at 65. I have $310,000 invested and add $1,900/month. "
+    "I'll need about $6,500/month in today's dollars. Am I on track?"
+)
+RETIREMENT_TURN_2 = "What happens if I retire at 62 instead?"
+MARKET = (
+    "What's VTI trading at, and what has its actual annualized return and "
+    "volatility been over the last 10 years?"
+)
 
 
 class TestFigureExtraction:
@@ -99,10 +120,85 @@ class TestProvenance:
     def test_a_tool_result_that_is_not_json_is_scanned_as_text(self):
         assert _unsourced("Rent was $1,850.", "2026-01-03,Rent,-1850.00") == []
 
-    def test_a_figure_from_another_turn_is_not_a_source(self):
-        """Provenance is per turn; a restated earlier figure is flagged. That is
-        a known false positive the Phase 0 run exists to measure."""
+    def test_a_figure_from_no_turn_at_all_is_not_sourced(self):
         assert _unsourced("As before, $2,390.80.") == ["$2,390.80"]
+
+    def test_one_string_for_the_user_messages_is_refused(self):
+        """A str is an iterable of characters, so every digit would be a source."""
+        with pytest.raises(TypeError):
+            checks.unsourced_figures("$9", [], "I have $9")
+
+
+class TestEarlierTurns:
+    """Plan decision 3. In Phase 1's after-fix batch, 13 of retirement's 20
+    unsourced figures were turn 2 restating turn 1."""
+
+    def test_a_figure_from_an_earlier_user_message_is_sourced(self):
+        answer = "Assumptions: same as before, a flat $1,900/month."
+        assert _unsourced(answer, user=RETIREMENT_TURN_2, earlier=(RETIREMENT_TURN_1,)) == []
+
+    def test_a_figure_from_an_earlier_tool_output_is_sourced(self):
+        """Tool outputs are passed for the whole conversation, so turn 1's
+        project_savings result sources turn 2's restatement of it."""
+        turn_1_output = {"ending_balance": 1625950.0, "monthly_contribution": 1900}
+        answer = "At 65 you'd have had $1,625,950 ($1.63M)."
+        assert _unsourced(answer, turn_1_output, user=RETIREMENT_TURN_2) == []
+
+    def test_a_figure_in_no_turn_is_still_unsourced(self):
+        answer = "You'd need $3,500/month to close the gap."
+        assert _unsourced(answer, user=RETIREMENT_TURN_2, earlier=(RETIREMENT_TURN_1,)) == [
+            "$3,500"
+        ]
+
+
+class TestPromptDefaults:
+    """Plan decision 3: the rates SYSTEM_PROMPT tells the model to assume."""
+
+    def test_the_equity_default_is_sourced(self):
+        answer = "I'll keep using a 7% nominal return (your current assumption)."
+        assert _unsourced(answer, user=MARKET) == ["7%"]
+        assert _unsourced(answer, user=MARKET, defaults=PROMPT_DEFAULT_PERCENTS) == []
+
+    def test_the_inflation_default_is_sourced(self):
+        answer = "Assumptions: 7% return, 2.5% inflation."
+        assert _unsourced(answer, user=RETIREMENT_TURN_1, defaults=PROMPT_DEFAULT_PERCENTS) == []
+
+    def test_a_default_sources_only_a_percentage(self):
+        assert _unsourced("about $7", defaults=PROMPT_DEFAULT_PERCENTS) == ["$7"]
+
+    def test_the_constants_are_what_the_prompt_says(self):
+        for percent in PROMPT_DEFAULT_PERCENTS:
+            assert f"{percent}%" in SYSTEM_PROMPT
+
+
+class TestAPercentageNeedsAPercentageSource:
+    """The baseline's coincidental match: "never go above 10%" (the prompt's
+    cap) passed because the question said "the last 10 years"."""
+
+    def test_a_bare_number_in_the_question_does_not_source_a_percentage(self):
+        assert _unsourced("I'd never go above 10%.", user=MARKET) == ["10%"]
+
+    def test_the_cap_is_sourced_by_the_prompt_default_instead(self):
+        answer = "I'd never go above 10%."
+        assert _unsourced(answer, user=MARKET, defaults=PROMPT_DEFAULT_PERCENTS) == []
+
+    @pytest.mark.parametrize("said", ["assume 6% a year", "assume 6 % a year", "6 percent"])
+    def test_a_percentage_the_user_wrote_is_sourced(self, said):
+        assert _unsourced("At 6%, you'd have more.", user=said) == []
+
+    def test_a_bare_number_still_sources_a_dollar_amount(self):
+        assert _unsourced("a $500 contribution", user="I add 500 a month") == []
+
+
+class TestToolInputsAreNotASource:
+    """Plan decision 4. The baseline's case: the model computed a $3,275,000
+    target and passed it to test_withdrawal_plan. The checker is never given
+    tool inputs, so a figure that is only an input stays unsourced."""
+
+    def test_a_figure_only_in_a_tool_input_is_unsourced(self):
+        output = {"success_rate_note": "lasts to age 95", "ending_balance": 412000.0}
+        answer = "With a $3,275,000 target, the money lasts to 95."
+        assert _unsourced(answer, output, user=RETIREMENT_TURN_1) == ["$3,275,000"]
 
 
 class TestExpectedTools:
