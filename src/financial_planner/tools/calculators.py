@@ -252,6 +252,32 @@ def compare_fund_fees(
         return err(exc)
 
 
+@tool
+def add_amounts(amounts: list[dict]) -> str:
+    """Total amounts that no other calculator produced.
+
+    Call this whenever you would otherwise add or subtract figures yourself:
+    a contribution limit plus its catch-up from a search result, or two
+    figures the user gave you. Prefer the specific calculator where one fits.
+
+    Args:
+        amounts: At least two dicts, each with keys: label (str, what the
+            amount is) and amount (float, in dollars; negative to subtract).
+
+    Returns:
+        JSON with the items as given and their total.
+    """
+    try:
+        items = []
+        for entry in amounts:
+            if not isinstance(entry, dict) or not {"label", "amount"} <= entry.keys():
+                raise ValueError(f"each amount needs a label and an amount, got {entry!r}")
+            items.append((str(entry["label"]), float(entry["amount"])))
+        return ok(finance.sum_amounts(items))
+    except Exception as exc:  # noqa: BLE001
+        return err(exc)
+
+
 CALCULATOR_TOOLS = [
     project_savings,
     required_savings_rate,
@@ -259,4 +285,5 @@ CALCULATOR_TOOLS = [
     plan_debt_payoff,
     test_withdrawal_plan,
     compare_fund_fees,
+    add_amounts,
 ]

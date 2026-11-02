@@ -18,6 +18,7 @@ from financial_planner.finance import (
     project_portfolio,
     real_rate,
     required_monthly_contribution,
+    sum_amounts,
     withdrawal_sustainability,
 )
 
@@ -435,3 +436,12 @@ class TestCompareFees:
     def test_rejects_a_ratio_on_the_wrong_scale(self, ratio):
         with pytest.raises(ValueError, match="decimals"):
             compare_fees(**self.BASE, current_expense_ratio=ratio, alternative_expense_ratio=0.0)
+
+
+class TestSumAmounts:
+    def test_totals_without_float_drift(self):
+        assert sum_amounts([("a", 0.1), ("b", 0.2)])["total"] == 0.3
+
+    def test_needs_two_amounts(self):
+        with pytest.raises(ValueError, match="at least two"):
+            sum_amounts([("a", 1.0)])

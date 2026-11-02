@@ -406,9 +406,9 @@ class TestTablesFitANarrowWindow:
 class TestTheArithmeticRuleNamesTheFigureTools:
     """A tool returning a new kind of figure does not enforce the rule on its
     own: the prompt has to send the model to it. Pins the tools added for the
-    figures the model used to compute -- a fee in dollars."""
+    figures the model used to compute -- a fee in dollars, a search's total."""
 
-    @pytest.mark.parametrize("name", ["compare_fund_fees"])
+    @pytest.mark.parametrize("name", ["compare_fund_fees", "add_amounts"])
     def test_the_rule_names_the_tool(self, name: str) -> None:
         from financial_planner.prompts import SYSTEM_PROMPT
 
@@ -423,6 +423,7 @@ class TestTheArithmeticRuleNamesTheFigureTools:
 
         text = " ".join(SYSTEM_PROMPT.split())
         assert "If you put a fund's fee in dollars" in text
+        assert "If you need a total or a difference" in text
 
 
 class TestModelSettings:

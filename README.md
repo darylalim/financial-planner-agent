@@ -358,6 +358,7 @@ analysis goes wrong.
 | `plan_debt_payoff` | Multi-debt simulation, avalanche or snowball |
 | `test_withdrawal_plan` | Retirement drawdown sustainability |
 | `compare_fund_fees` | What one expense ratio costs against another, in dollars over time |
+| `add_amounts` | Totals of figures no other tool produced, such as a limit and its catch-up from a search |
 | `inspect_document` | Schema and preview of a CSV/XLSX; the structure, never the text, of a PDF |
 | `summarize_spending` | Aggregate a CSV/XLSX export by category and month, with savings rate and monthly averages |
 | `read_pdf_text` | Extract a page range from a PDF. **Document-reader only**: the main agent cannot call it |
