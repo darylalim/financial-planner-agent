@@ -19,7 +19,7 @@ context. This block is all that session needs to get going.
 
 | Phase | Goal | Depends on | Version | Paid runs (est. model time) | Status |
 |---|---|---|---|---|---|
-| 1 | Tools return the figures the model was computing; classify what remains | — | 0.6.0 | ~20 min: a 3-run baseline, a `fees` shakedown, a 3-run after-fix batch | in progress (no-model-arithmetic-phase-1) |
+| 1 | Tools return the figures the model was computing; classify what remains | — | 0.6.0 | ~20 min: a 3-run baseline, a `fees` shakedown, a 3-run after-fix batch | PR #13 |
 | 2 | An unsourced figure fails the live check | 1 | none (scripts only) | ~10 min: one 3-run confirmation batch, one rerun if needed | not started |
 
 Status values: `not started` / `in progress (<branch>)` / `PR #<n>` / `merged`. Set
@@ -205,7 +205,14 @@ Open for Phase 2, beyond decision 3:
 - **A dropped connection** should be its own outcome, neither clean nor a defect, so one
   network error neither fails nor loses a confirmation batch.
 - **Truncation** is the model's rounding, and accepting it would let every figure match
-  two values. Kept unsourced.
+  two values. Kept unsourced. It is consistent, not noise: the confirmation runs below
+  truncated `820949.52` to `$820,949` in 3 of 3. Tools returning whole dollars where
+  cents carry no meaning would remove it at the source.
+
+**Confirmation** (2026-11-02, 3 runs each of debt and fees, `dab4655`): debt 0 unsourced
+in 3 of 3, stating `$630` and `$970` from `monthly_payment_before_payoff`; fees 1 in each
+run, the truncated `$820,949`, with "$41,049 in lost growth" now from the tool. The *model
+arithmetic* class is empty.
 
 ## Phase 2: an unsourced figure fails the live check
 
