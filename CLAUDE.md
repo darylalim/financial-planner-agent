@@ -138,7 +138,8 @@ not unique: `/data/homes/alice` and `/data/homes/bob` would otherwise share one 
 store, and either household could resume the other's finances by thread id. Always a
 sibling of `AGENT_HOME`, never inside it, so the agent cannot read its own transcript.
 `.claude/hooks/guard-sensitive-paths.sh` re-derives *both* branches (`lib.sh` mirrors
-only `AGENT_HOME`), and `tests/test_agent.py::TestCheckpointDatabaseLocation` pins them.
+only `AGENT_HOME`). `tests/test_agent.py::TestCheckpointDatabaseLocation` pins
+`config.py`'s copy and `tests/test_hooks.py::TestARedirectedHome` the guard's.
 
 **`config.py` reads the environment at import time.** `tests/conftest.py` therefore sets
 `FINANCIAL_PLANNER_HOME` before the first `financial_planner` import. The throwaway home
@@ -287,7 +288,7 @@ structure is easy to skip, and skipping it is the common failure.
   `skills/**` and `workspace/.gitkeep`. That last part is an allowlist, like `.gitignore`'s,
   so a runtime folder a library adds later is refused by default; it skips itself if the
   home is the repo root or above, where it would refuse every edit. `.env.example` stays
-  editable.
+  editable. `tests/test_hooks.py` pins the guard by running it on payloads.
   Bash is unmatched by design, so this is a tool-dispatch filter, not a boundary; it also
   skips without a `.venv` and arms only when Edit/Write touched a `.py`. Run the gate
   yourself when working outside those conditions.
