@@ -20,7 +20,7 @@ context. This block is all that session needs to get going.
 | Phase | Goal | Depends on | Version | Paid runs (est. model time) | Status |
 |---|---|---|---|---|---|
 | 1 | Tools return the figures the model was computing; classify what remains | — | 0.6.0 | ~20 min: a 3-run baseline, a `fees` shakedown, a 3-run after-fix batch | PR #13 |
-| 2 | An unsourced figure fails the live check | 1 | none (scripts only) | ~10 min: one 3-run confirmation batch, one rerun if needed | not started |
+| 2 | An unsourced figure fails the live check | 1 | 0.7.0 (decisions 8 and 10 change tools) | ~15 min: a shakedown, one 3-run confirmation batch, one rerun if needed | not started |
 
 Status values: `not started` / `in progress (<branch>)` / `PR #<n>` / `merged`. Set
 `PR #<n>` in the PR's own commits, not with a push to `main`. Issues and PRs share one
@@ -111,13 +111,41 @@ PR's last commit when the app changes · status table updated in the same PR.
    one clean 3-run batch over every scenario. If that can't be reached, stop and ask the
    owner rather than adding a tolerance. A threshold would hide exactly the kind of drift
    the check exists to catch.
+6. **`streaming.py` is not touched.** Everything the checker needs is already collected
+   by the harness's callbacks.
 7. **Totals of figures no calculator produces come from a sum tool** (decided
    2026-11-02, after the baseline's `$35,750`: two search-sourced limits the model
    added). The tool takes labelled amounts and returns them with their total, so the
    arithmetic rule can name it. Rejected: a prompt rule alone, which is what this plan
    replaces.
-6. **`streaming.py` is not touched.** Everything the checker needs is already collected
-   by the harness's callbacks.
+8. **A recalled figure still fails; fix where it comes from** (decided 2026-11-02, after
+   the after-fix batch's `5.75%` sales load and "20–30%" swings). A deterministic check
+   cannot tell a recalled figure from a computed one, so a "recalled" class would be an
+   exemption list, and decision 5 stands. Each recalled figure gets a source instead:
+   - a fund's sales load: `get_fund_profile` returns it if the installed yfinance
+     exposes it (check first); if not, the prompt's conditional rule extends to "If you
+     state a fund's fee, load or limit that no tool gave you, look it up with
+     `search_web`";
+   - a range read off a volatility: `get_historical_return` returns it in plain terms,
+     or the model gives none.
+
+   Rejected: reporting recalled figures as their own class, which only an LLM judge
+   could separate (see Rejected, below).
+9. **A dropped connection is its own outcome, never clean** (decided 2026-11-02, after a
+   `Connection reset by peer` killed the after-fix batch and lost its results).
+   `live_check` catches transport errors per run and retries once on a fresh home. A
+   run that still fails is *not run*: it keeps the results already collected, prints
+   the summary, and makes the batch exit `2` ("cannot run", the code `main()` already
+   uses), not `1` or `0`. This is about infrastructure, so it is not the tolerance
+   decision 5 rules out.
+10. **Estimates are returned in whole dollars; amounts that must match a statement keep
+    cents** (decided 2026-11-02, after `820949.52` was shown as `$820,949` in 3 of 3
+    runs). Projection and comparison balances (`project_savings`, `compare_fund_fees`,
+    `test_withdrawal_plan`) round to the dollar: cents on a 25-year estimate are false
+    precision, and with none there is nothing to truncate. Loan payments, debt interest
+    and spending totals keep cents, since `$1,798.65` has to match the user's
+    statement. Rejected: accepting truncation in the checker, which would let every
+    figure match two values; and a prompt rule alone.
 
 Rejected: an LLM judge for "is this figure derived". It is non-deterministic, costs
 money on every run, and the deterministic check has been good enough to find the real
@@ -198,16 +226,9 @@ The batch ran in two parts. A `Connection reset by peer` during the first debt r
 killed the process, and with it every result already collected: `run_scenario` has no
 per-run error handling. budget's three runs had finished and are kept.
 
-Open for Phase 2, beyond decision 3:
-- **Recalled facts** (`5.75%`, "20–30%") are not arithmetic, but decision 5 fails a run
-  on them. Either the model sources them (`search_web`) or the checker reports them as
-  their own class. That is a scoping decision for the owner.
-- **A dropped connection** should be its own outcome, neither clean nor a defect, so one
-  network error neither fails nor loses a confirmation batch.
-- **Truncation** is the model's rounding, and accepting it would let every figure match
-  two values. Kept unsourced. It is consistent, not noise: the confirmation runs below
-  truncated `820949.52` to `$820,949` in 3 of 3. Tools returning whole dollars where
-  cents carry no meaning would remove it at the source.
+Three questions this batch raised for Phase 2 (recalled facts, a dropped connection,
+truncation) are settled as decisions 8–10. Truncation turned out to be consistent, not
+noise: the confirmation runs below truncated `820949.52` to `$820,949` in 3 of 3.
 
 **Confirmation** (2026-11-02, 3 runs each of debt and fees, `dab4655`): debt 0 unsourced
 in 3 of 3, stating `$630` and `$970` from `monthly_payment_before_payoff`; fees 1 in each
@@ -221,14 +242,22 @@ red.
 
 ### Steps
 
-1. **Teach `answer_checks.py` the sources in decision 3,** each with offline tests built
+1. **A dropped connection is its own outcome** (decision 9), with an offline test that a
+   transport error in one run neither ends the batch nor counts as clean. First, so no
+   later batch is lost to one.
+2. **Teach `answer_checks.py` the sources in decision 3,** each with offline tests built
    from Phase 1's recorded examples, plus a test that a tool-input-only figure stays
-   unsourced (decision 4).
-2. **Make an unsourced figure fail the run** in `live_check.run_scenario`, the way a
+   unsourced (decision 4). Close the coincidental match recorded under the baseline (a
+   bare `10` in the question sourcing a `10%`) in the same change.
+3. **Give recalled figures a source** (decision 8): check yfinance for a sales-load
+   field, then the tool or the prompt rule; and the volatility range.
+4. **Whole dollars for estimates** (decision 10), with tests that the debt and loan
+   figures keep their cents.
+5. **Make an unsourced figure fail the run** in `live_check.run_scenario`, the way a
    missing tool does. Report the tool-input category separately in the summary table.
-3. **README → The live check:** say what counts as sourced, and that an unsourced figure
-   fails.
-4. **Confirmation batch:** 3 runs over every scenario, PDFs included, since they check
+6. **README → The live check:** say what counts as sourced, that an unsourced figure
+   fails, and that a run lost to the network is reported as not run.
+7. **Confirmation batch:** 3 runs over every scenario, PDFs included, since they check
    figures too. Clean means done. Anything else follows decision 5.
 
 **Check:** a clean 3-run batch, its table in the PR description.
