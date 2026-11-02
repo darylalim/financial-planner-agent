@@ -20,7 +20,7 @@ context. This block is all that session needs to get going.
 | Phase | Goal | Depends on | Version | Paid runs (est. model time) | Status |
 |---|---|---|---|---|---|
 | 1 | A seeded Monte Carlo tool, its prompt rule and its tests | — | 0.8.0 (new tool) | ~4 min (actual ~7: a `retirement` shakedown, whose bare "0.49" reworded the probability rule; one 1-run batch over all 11 scenarios, 10 clean, `retirement`'s one unsourced figure an invented Social Security example, not a tool gap; a resume of a thread saved on `main`) | merged |
-| 2 | `retirement-readiness` reports the probability; the live check expects the tool | 1 | 0.8.1 (skill change) | ~12 min: a shakedown, `retirement --repeat 3`, one 3-run batch over every scenario | in progress (monte-carlo-phase-2) |
+| 2 | `retirement-readiness` reports the probability; the live check expects the tool | 1 | 0.8.1 (skill change) | ~12 min (actual ~17: a `retirement` shakedown, clean; `retirement --repeat 3`, 3 of 3 clean; a 3-run batch over all 11 scenarios, 29 of 33 clean -- `retirement`'s one unsourced figure the invented $2,500 Social Security illustration again, `debt`'s two the known parallel `edit_file` refusal, neither from this phase) | in progress (monte-carlo-phase-2) |
 
 Status values: `not started` / `in progress (<branch>)` / `PR #<n>` / `merged`. Set
 `PR #<n>` in the PR's own commits, not with a push to `main`. Issues and PRs share one
