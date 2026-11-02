@@ -233,6 +233,19 @@ def unsourced_figures(
     return [f.text for f in answer_figures(answer) if not is_sourced(f, sources)]
 
 
+def tool_input_only(answer: str, unsourced: Iterable[str], tool_inputs: Iterable[str]) -> list[str]:
+    """The ``unsourced`` figures that match a value the model passed *into* a tool.
+
+    Still unsourced, and still a failure (plan decision 4): the baseline's
+    $3,275,000 was a target the model computed and then handed to
+    test_withdrawal_plan, so an input is where model arithmetic hides. Reported
+    as its own category because it says where to look: the call's arguments.
+    """
+    inputs = source_numbers(tool_inputs, [])
+    wanted = set(unsourced)
+    return [f.text for f in answer_figures(answer) if f.text in wanted and is_sourced(f, inputs)]
+
+
 def missing_tools(scenario: str, ran: Iterable[str]) -> list[str]:
     """The tools ``scenario`` requires that never ran, in any agent."""
     return sorted(EXPECTED_TOOLS.get(scenario, frozenset()) - set(ran))

@@ -99,7 +99,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 import anthropic  # noqa: E402
 import httpx2  # noqa: E402
-from answer_checks import missing_tools, unsourced_figures  # noqa: E402
+from answer_checks import missing_tools, tool_input_only, unsourced_figures  # noqa: E402
 from batch import RunResult, exit_status, run_once_with_retry  # noqa: E402
 from langchain_core.callbacks import BaseCallbackHandler  # noqa: E402
 from langgraph.checkpoint.memory import InMemorySaver  # noqa: E402
@@ -428,6 +428,7 @@ def run_scenario(name: str, turns: list[str], model: str) -> RunResult:
     # from an earlier turn is sourced by that turn's user message or tool output.
     said: list[str] = []
     outputs_so_far: list[str] = []
+    inputs_so_far: list[str] = []
     for i, prompt in enumerate(turns, 1):
         print(f"\n--- turn {i} ---\n> {prompt}\n")
         started = time.time()
@@ -480,17 +481,26 @@ def run_scenario(name: str, turns: list[str], model: str) -> RunResult:
 
         ran_anywhere.update(call.name for call in recorder.calls)
         delegated = [f"{c.name} ({c.agent})" for c in recorder.calls if c.agent != agent.name]
-        # Reported, not failed, until Phase 2 step 5 of the plan makes it fail.
+        # A figure no tool, user message or prompt default supplied fails the
+        # run, with no threshold (plan decision 5): a model or prompt change
+        # that breaks the arithmetic rule has to turn this check red.
         said.append(prompt)
         outputs_so_far.extend(c.output for c in recorder.calls)
+        inputs_so_far.extend(c.input for c in recorder.calls)
         unsourced = unsourced_figures(answer, outputs_so_far, said, PROMPT_DEFAULT_PERCENTS)
+        as_input = tool_input_only(answer, unsourced, inputs_so_far)
         result.unsourced += len(unsourced)
+        result.tool_input += len(as_input)
+        if unsourced:
+            problems.append(f"unsourced figures: {unsourced}")
 
         print(f"\n  tools: {tools}")
         if delegated:
             print(f"  delegated: {delegated}")
         print(f"  elapsed: {time.time() - started:.1f}s   answer chars: {len(answer)}")
         print(f"  unsourced figures: {len(unsourced)} {unsourced if unsourced else ''}")
+        if as_input:
+            print(f"     of which only a tool input (the model's own figure): {as_input}")
         for name in recovered:
             print(f"  ~~ {name} returned an error the agent could recover from")
         # The error text, so a failure says what went wrong without a rerun.
@@ -520,14 +530,15 @@ def print_summary(model: str, results: dict[str, list[RunResult]]) -> None:
     """One row per scenario, summed over its runs -- the comparison table."""
     print(f"\n{'=' * 78}\nSUMMARY   model: {model}")
     header = (
-        f"  {'scenario':12s} {'runs':>4s} {'clean':>5s} {'unsrc':>5s} {'miss':>4s} "
+        f"  {'scenario':12s} {'runs':>4s} {'clean':>5s} {'unsrc':>5s} {'input':>5s} {'miss':>4s} "
         f"{'defect':>6s} {'empty':>5s} {'notrun':>6s} {'in tok':>9s} {'out tok':>8s} {'secs':>6s}"
     )
     print(header)
     for name, runs in results.items():
         print(
             f"  {name:12s} {len(runs):4d} {sum(r.ok for r in runs):5d} "
-            f"{sum(r.unsourced for r in runs):5d} {sum(r.missing_tools for r in runs):4d} "
+            f"{sum(r.unsourced for r in runs):5d} {sum(r.tool_input for r in runs):5d} "
+            f"{sum(r.missing_tools for r in runs):4d} "
             f"{sum(r.defects for r in runs):6d} {sum(r.empty_answers for r in runs):5d} "
             f"{sum(bool(r.not_run) for r in runs):6d} "
             f"{sum(r.input_tokens for r in runs):9d} {sum(r.output_tokens for r in runs):8d} "
