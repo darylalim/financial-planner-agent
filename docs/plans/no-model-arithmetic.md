@@ -19,7 +19,7 @@ context. This block is all that session needs to get going.
 
 | Phase | Goal | Depends on | Version | Paid runs (est. model time) | Status |
 |---|---|---|---|---|---|
-| 1 | Tools return the figures the model was computing; classify what remains | — | 0.6.0 | ~20 min: a 3-run baseline, a `fees` shakedown, a 3-run after-fix batch | not started |
+| 1 | Tools return the figures the model was computing; classify what remains | — | 0.6.0 | ~20 min: a 3-run baseline, a `fees` shakedown, a 3-run after-fix batch | in progress (no-model-arithmetic-phase-1) |
 | 2 | An unsourced figure fails the live check | 1 | none (scripts only) | ~10 min: one 3-run confirmation batch, one rerun if needed | not started |
 
 Status values: `not started` / `in progress (<branch>)` / `PR #<n>` / `merged`. Set
@@ -111,6 +111,11 @@ PR's last commit when the app changes · status table updated in the same PR.
    one clean 3-run batch over every scenario. If that can't be reached, stop and ask the
    owner rather than adding a tolerance. A threshold would hide exactly the kind of drift
    the check exists to catch.
+7. **Totals of figures no calculator produces come from a sum tool** (decided
+   2026-11-02, after the baseline's `$35,750`: two search-sourced limits the model
+   added). The tool takes labelled amounts and returns them with their total, so the
+   arithmetic rule can name it. Rejected: a prompt rule alone, which is what this plan
+   replaces.
 6. **`streaming.py` is not touched.** Everything the checker needs is already collected
    by the harness's callbacks.
 
@@ -145,6 +150,28 @@ remaining unsourced figures are.
    entry explained.
 
 **Check:** the after-fix table, in the PR description and here.
+
+### Baseline (2026-11-01, Opus 5.5, 3 runs, `6b3bf49`)
+
+15 unsourced figures. Each row is one figure, with how many runs showed it.
+
+| Scenario | Figure | Runs | Sentence (abridged) | Class |
+|---|---|---|---|---|
+| search | $35,750 | 2 of 3 | "catch-up is $11,250 … That brings your total to $35,750" | **model arithmetic** (24,500 + 11,250; the snippets give the parts only) |
+| market | 7% | 3 of 3 (4 figures) | "I'll keep using a 7% nominal return … (your current assumption)" | prompt default (equity return) |
+| retirement | 2.5% | 3 of 3, both turns (6) | "Assumptions: … 2.5% inflation" | prompt default (inflation; also a tool input, and `project_savings` does not echo it) |
+| retirement | $1,900 | 3 of 3, turn 2 (3) | "Assumptions: same as before … a flat $1,900/month" | earlier turn (turn 1's user message) |
+
+Seen in the baseline but not counted:
+- **Coincidental match.** market: "never go above 10%", the prompt's cap, was accepted
+  because the question says "last 10 years". Any number in the user message sources any
+  percentage of that value. Phase 2 should close this when it adds the prompt defaults
+  as a source.
+- **Outside the checker's scope.** retirement: "a failure about nine years before 95"
+  (95 − 86) is model arithmetic, but the checker counts only `$` and `%` figures.
+- **Not arithmetic.** debt runs 2 and 3 failed on `tools returned errors: ['edit_file']`
+  (the agent's `/AGENTS.md` update). Three `edit_file` calls ran, but only the two
+  successes were recorded, so the log does not show the failure's text.
 
 ## Phase 2: an unsourced figure fails the live check
 
