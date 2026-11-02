@@ -608,6 +608,11 @@ def compare_fees(
         # is the dearer fund, so no sign has to be inferred from the prose.
         "alternative_ending_balance_higher_by": round(alternative - current, 2),
         "alternative_fees_lower_by": round(current_fees - alternative_fees, 2),
+        # The rest of the gap: what the fee money would have earned. Answers
+        # explain the gap as fees plus this, so it is returned, not subtracted.
+        "growth_lost_on_the_fee_difference": round(
+            (alternative - current) - (current_fees - alternative_fees), 2
+        ),
         "assumptions": [
             "Each expense ratio comes off the gross annual return before it is "
             "converted to a monthly rate.",
