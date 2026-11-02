@@ -558,9 +558,10 @@ session as a household fact.
 `--repeat` and `--model` exist to compare models. Run each scenario several
 times, because one run of a model whose output varies tells you little. The
 model is passed to `build_agent`, so it gets the same settings as the app. The
-script ends with a per-scenario table: clean runs, unsourced figures, missing
-expected tools, answer defects, empty answers, tokens (subagent and summarizer
-calls included) and wall time.
+script ends with a per-scenario table: clean runs, unsourced figures (and how
+many of those were tool inputs), missing expected tools, answer defects, empty
+answers, runs lost to the network, tokens (subagent and summarizer calls
+included) and wall time.
 
 Offline tests cannot see the failures that only a real provider produces. Three
 got through a green suite: raw tool JSON rendered as the answer, assistant
@@ -578,12 +579,31 @@ probes the agent recovers from in its next step, and failing on those buries the
 signal under benign noise. They are printed, not counted. Everything else stays
 fatal, our own tools included.
 
+A run also fails on any dollar amount or percentage in the answer that nothing
+in the conversation supplied, which is how the live check enforces
+[the arithmetic rule](#the-arithmetic-rule). A figure counts as
+sourced if it matches, at the precision shown, an output of any tool in any turn
+so far, something the user said in any turn so far, or one of the assumptions
+the system prompt states. A percentage needs a percentage source: a bare "10" in
+the question does not vouch for "10%". A value the model passed *into* a tool is
+not a source, since a figure it computed and then handed to a calculator is
+still its own arithmetic. Such a figure fails like any other, and is named as a
+tool input so the fix starts at that call's arguments. There is no tolerance: one
+unsourced figure fails the run. `scripts/answer_checks.py` holds the matching
+rules.
+
 It runs against a throwaway home directory, so your own `AGENTS.md`, workspace and
 conversation history are untouched. `CHECKPOINT_DB` is derived from the home
 rather than pinned to the repository, which is what keeps the transcript out of
 your real checkpoint database. It needs `ANTHROPIC_API_KEY`; the search scenario
-is skipped without `TAVILY_API_KEY`, and a run left with no scenarios exits
-non-zero rather than reporting a clean pass over nothing.
+is skipped without `TAVILY_API_KEY`.
+
+The exit status is `0` when every run was clean and `1` when any found a
+problem. It is `2` when the check could not vouch for what it was asked to
+check: a missing key, an unknown scenario, no scenarios left after skipping, or a
+run lost to the network. A dropped connection is retried once on a fresh home;
+if it drops again the run is reported as *not run*, never as clean, and the rest
+of the batch carries on.
 
 ### Releases
 
