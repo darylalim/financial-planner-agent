@@ -176,6 +176,10 @@ SCENARIOS: dict[str, list[str]] = {
         "I'll need about $6,500/month in today's dollars. Am I on track?",
         "What happens if I retire at 62 instead?",
     ],
+    "fees": [
+        "I hold $80,000 in AGTHX and add $500 a month. What is its fee costing me "
+        "over 25 years compared with VTI?",
+    ],
 }
 
 # The document-reader quarantine: one scenario per statement in

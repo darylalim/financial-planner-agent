@@ -109,23 +109,35 @@ def _round(value: Any) -> float | None:
 
 
 # yfinance exposes the expense ratio through two fields on two *different*
-# scales, and which one a fund populates varies by feed. Reporting whichever is
-# present under a single note that asserts the percentage scale understates a
-# decimal-scaled fee by 100x -- which is exactly the error the note exists to
-# prevent. So the note is chosen by the field the value actually came from.
+# scales, and which one a fund populates varies by feed. Each field's scale is
+# fixed, though (checked on VTI, VOO, SPY, QQQ, ARKK, FXAIX, VFIAX and AGTHX, and
+# where a fund has both they agree), so the tool converts and the model never
+# has to: a misread scale is a 100x error in a fee the user acts on.
 #
 # Insertion order is *preference* order -- the net ratio is the one a fund
 # actually charges after waivers, so it wins where both are present.
-_EXPENSE_RATIO_NOTES = {
-    "netExpenseRatio": (
-        "Provider reports this as a percentage figure (0.03 means 0.03%). "
-        "Confirm against the fund's own factsheet before quoting it to the user."
-    ),
-    "annualReportExpenseRatio": (
-        "Provider reports this as a decimal fraction (0.0003 means 0.03%). "
-        "Confirm against the fund's own factsheet before quoting it to the user."
-    ),
+_EXPENSE_RATIO_FIELDS = {
+    "netExpenseRatio": (1, "a percentage figure (0.03 means 0.03%)"),
+    "annualReportExpenseRatio": (100, "a decimal fraction (0.0003 means 0.03%)"),
 }
+_FACTSHEET_CAVEAT = "Confirm against the fund's own factsheet before relying on it."
+
+
+def _expense_ratio(info: dict) -> tuple[Any, str | None, float | None, str | None]:
+    """The raw value, the field it came from, the percentage, and a note."""
+    for field, (to_percent, scale) in _EXPENSE_RATIO_FIELDS.items():
+        raw = info.get(field)
+        if raw is None:
+            continue
+        try:
+            # Rounded because the fraction field carries float noise: FXAIX
+            # reports 0.00014999999, which would otherwise surface as 0.014999999%.
+            percent = round(float(raw) * to_percent, 4)
+        except (TypeError, ValueError):
+            percent = None
+        note = f"The provider reports {field} as {scale}. {_FACTSHEET_CAVEAT}"
+        return raw, field, percent, note
+    return None, None, None, None
 
 
 @tool
@@ -134,44 +146,37 @@ def get_fund_profile(ticker: str) -> str:
 
     Call this whenever a user names a fund they hold or is considering. The
     expense ratio is the single most reliable lever on long-run outcomes that a
-    household actually controls, so surface it and translate it into dollars:
-    a 0.75% fee against a 0.03% alternative is roughly a quarter of the
-    portfolio's growth over a working lifetime.
+    household actually controls, so surface it. To put a fee in dollars, pass
+    expense_ratio_percent as is to `compare_fund_fees`; never estimate the cost
+    yourself.
 
     Args:
         ticker: A fund or ETF symbol, e.g. "VTI".
 
     Returns:
-        JSON with name, quote_type, category, expense_ratio_raw,
-        expense_ratio_source and expense_ratio_note. The raw value is the
-        provider's own, unconverted; the two fields it can come from use
-        different scales, so expense_ratio_source names which one supplied it
-        and expense_ratio_note states that field's scale. Read the value on the
-        scale the note gives, relay the caveat, and check the fund's factsheet
-        before converting the fee to dollars -- reading it on the wrong scale is
-        a 100x error. Fields are null when the provider lacks the data.
+        JSON with name, quote_type, category, expense_ratio_percent (already a
+        percentage: 0.03 means 0.03%), expense_ratio_raw and
+        expense_ratio_source (the provider's own value and field, for audit),
+        and expense_ratio_note, a caveat to relay. Report expense_ratio_percent;
+        do not convert any of these. Fields are null when the provider lacks
+        the data.
     """
     try:
         sym = _clean([ticker])[0]
         info = yf.Ticker(sym).info or {}
-        expense, source = None, None
-        for field in _EXPENSE_RATIO_NOTES:
-            value = info.get(field)
-            if value is not None:
-                expense, source = value, field
-                break
+        raw, source, percent, note = _expense_ratio(info)
         return ok(
             {
                 "ticker": sym,
                 "name": info.get("longName") or info.get("shortName"),
                 "quote_type": info.get("quoteType"),
                 "category": info.get("category"),
-                # The raw value, never converted: the provider's own number is
-                # the one the user can check against a factsheet. The scale is
-                # carried by the source and its note instead of guessed at.
-                "expense_ratio_raw": expense,
+                "expense_ratio_percent": percent,
+                # The provider's own number, unconverted, so the user can check
+                # it against a factsheet.
+                "expense_ratio_raw": raw,
                 "expense_ratio_source": source,
-                "expense_ratio_note": _EXPENSE_RATIO_NOTES.get(source),
+                "expense_ratio_note": note,
             }
         )
     except Exception as exc:  # noqa: BLE001

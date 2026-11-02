@@ -35,6 +35,7 @@ __all__ = [
     "ProjectionResult",
     "amortize_loan",
     "apr_monthly_rate",
+    "compare_fees",
     "monthly_rate",
     "payoff_debts",
     "project_portfolio",
@@ -48,6 +49,9 @@ __all__ = [
 _MAX_YEARS = 100
 _MAX_MONTHS = _MAX_YEARS * 12
 _MAX_RATE = 1.0  # 100% annual
+# The dearest ordinary funds charge around 2.5%. Ten percent is far past that and
+# well short of 59% -- what 0.59 means if a percentage is passed as a decimal.
+_MAX_EXPENSE_RATIO = 0.10
 
 
 def _check_rate(name: str, value: float) -> None:
@@ -499,4 +503,98 @@ def withdrawal_sustainability(
             "risk and market volatility; a Monte Carlo simulation is required "
             "for a genuine probability of success."
         ),
+    }
+
+
+def _grow_net_of_fee(
+    *,
+    starting_balance: float,
+    monthly_contribution: float,
+    years: int,
+    gross_annual_return: float,
+    expense_ratio: float,
+) -> tuple[float, float]:
+    """The ending balance and the fees paid, with the fee taken off the return."""
+    gross_month = monthly_rate(gross_annual_return)
+    net_month = monthly_rate(gross_annual_return - expense_ratio)
+    balance, fees = float(starting_balance), 0.0
+    for _ in range(years * 12):
+        # The month's fee is the growth the gross return would have added and
+        # the net return does not: charging it this way keeps the balance on
+        # the net path exactly, so the fees reconcile with the ending balances.
+        fees += balance * (gross_month - net_month)
+        balance = balance * (1.0 + net_month) + monthly_contribution
+    return balance, fees
+
+
+def compare_fees(
+    *,
+    starting_balance: float,
+    monthly_contribution: float,
+    years: int,
+    gross_annual_return: float,
+    current_expense_ratio: float,
+    alternative_expense_ratio: float,
+) -> dict:
+    """What a fund's fee costs against a cheaper (or dearer) alternative.
+
+    The expense ratio comes off the annual return before the geometric monthly
+    conversion: a fund returning 7% gross with a 0.59% fee is a 6.41% fund. Two
+    ``project_portfolio`` calls could give the two balances, but their
+    difference would then be the model's subtraction, so this returns it.
+
+    Expense ratios are decimals like every rate here (0.0059 for 0.59%).
+    """
+    _check_non_negative("starting_balance", starting_balance)
+    _check_non_negative("monthly_contribution", monthly_contribution)
+    _check_rate("gross_annual_return", gross_annual_return)
+    for name, ratio in (
+        ("current_expense_ratio", current_expense_ratio),
+        ("alternative_expense_ratio", alternative_expense_ratio),
+    ):
+        if not 0 <= ratio <= _MAX_EXPENSE_RATIO:
+            raise ValueError(
+                f"{name}={ratio} is outside [0, {_MAX_EXPENSE_RATIO}]. "
+                "Expense ratios are decimals here: 0.0059 for 0.59%."
+            )
+        _check_rate("net annual return", gross_annual_return - ratio)
+    if not 0 < years <= _MAX_YEARS:
+        raise ValueError(f"years must be in (0, {_MAX_YEARS}], got {years}")
+
+    common = {
+        "starting_balance": starting_balance,
+        "monthly_contribution": monthly_contribution,
+        "years": years,
+        "gross_annual_return": gross_annual_return,
+    }
+    current, current_fees = _grow_net_of_fee(**common, expense_ratio=current_expense_ratio)
+    alternative, alternative_fees = _grow_net_of_fee(
+        **common, expense_ratio=alternative_expense_ratio
+    )
+    return {
+        "years": years,
+        "total_contributed": round(monthly_contribution * 12 * years, 2),
+        "current": {
+            "expense_ratio": current_expense_ratio,
+            "net_annual_return": round(gross_annual_return - current_expense_ratio, 6),
+            "ending_balance": round(current, 2),
+            "total_fees_paid": round(current_fees, 2),
+        },
+        "alternative": {
+            "expense_ratio": alternative_expense_ratio,
+            "net_annual_return": round(gross_annual_return - alternative_expense_ratio, 6),
+            "ending_balance": round(alternative, 2),
+            "total_fees_paid": round(alternative_fees, 2),
+        },
+        # Signed, and named for the direction: negative when the alternative
+        # is the dearer fund, so no sign has to be inferred from the prose.
+        "alternative_ending_balance_higher_by": round(alternative - current, 2),
+        "alternative_fees_lower_by": round(current_fees - alternative_fees, 2),
+        "assumptions": [
+            "Each expense ratio comes off the gross annual return before it is "
+            "converted to a monthly rate.",
+            "Both funds earn the same gross return; only the fee differs.",
+            "Nominal dollars, not adjusted for inflation; no taxes or loads.",
+            "Contributions at the end of each month, with no increases.",
+        ],
     }

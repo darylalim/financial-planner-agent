@@ -12,6 +12,7 @@ import pytest
 from financial_planner.finance import (
     amortize_loan,
     apr_monthly_rate,
+    compare_fees,
     monthly_rate,
     payoff_debts,
     project_portfolio,
@@ -382,3 +383,55 @@ class TestGuardsFoundByReview:
         result = payoff_debts(debts=TestDebtPayoff.MIXED, monthly_budget=1_000_000)
         assert result.months_to_debt_free == 1
         assert len(result.payoff_order) == 3
+
+
+class TestCompareFees:
+    BASE = {
+        "starting_balance": 80_000.0,
+        "monthly_contribution": 500.0,
+        "years": 25,
+        "gross_annual_return": 0.07,
+    }
+
+    def test_each_balance_is_a_projection_at_the_net_return(self):
+        """The fee comes off the annual return, then the geometric conversion."""
+        result = compare_fees(
+            **self.BASE, current_expense_ratio=0.0059, alternative_expense_ratio=0.0003
+        )
+        for side, ratio in (("current", 0.0059), ("alternative", 0.0003)):
+            projected = project_portfolio(
+                starting_balance=80_000.0,
+                monthly_contribution=500.0,
+                years=25,
+                annual_return=0.07 - ratio,
+                annual_inflation=0.0,
+            )
+            assert result[side]["ending_balance"] == pytest.approx(
+                projected.final_balance_nominal, abs=0.01
+            )
+
+    def test_a_zero_fee_pays_no_fees(self):
+        result = compare_fees(**self.BASE, current_expense_ratio=0.0, alternative_expense_ratio=0.0)
+        assert result["current"]["total_fees_paid"] == 0
+        assert result["alternative_ending_balance_higher_by"] == 0
+
+    def test_fees_reconcile_with_the_gross_path(self):
+        """Gross balance minus net balance is the fees plus the growth they lost."""
+        result = compare_fees(
+            **self.BASE, current_expense_ratio=0.01, alternative_expense_ratio=0.0
+        )
+        gap = result["alternative_ending_balance_higher_by"]
+        fees = result["current"]["total_fees_paid"]
+        assert 0 < fees < gap
+
+    def test_a_dearer_alternative_is_a_negative_gap(self):
+        result = compare_fees(
+            **self.BASE, current_expense_ratio=0.0003, alternative_expense_ratio=0.0059
+        )
+        assert result["alternative_ending_balance_higher_by"] < 0
+        assert result["alternative_fees_lower_by"] < 0
+
+    @pytest.mark.parametrize("ratio", [0.59, -0.001])
+    def test_rejects_a_ratio_on_the_wrong_scale(self, ratio):
+        with pytest.raises(ValueError, match="decimals"):
+            compare_fees(**self.BASE, current_expense_ratio=ratio, alternative_expense_ratio=0.0)

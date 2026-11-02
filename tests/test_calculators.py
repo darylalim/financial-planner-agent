@@ -20,6 +20,7 @@ import pytest
 from financial_planner.streaming import _is_error_result
 from financial_planner.tools.calculators import (
     CALCULATOR_TOOLS,
+    compare_fund_fees,
     loan_payment,
     plan_debt_payoff,
     project_savings,
@@ -33,6 +34,16 @@ DEBTS = [
     {"name": "Card A", "balance": 6000.0, "apr": 0.22, "minimum_payment": 120.0},
     {"name": "Card B", "balance": 2000.0, "apr": 0.09, "minimum_payment": 50.0},
 ]
+
+# The fees scenario's question, as compare_fund_fees would be called for it.
+FEE_ARGS = {
+    "starting_balance": 80_000,
+    "monthly_contribution": 500,
+    "years": 25,
+    "gross_annual_return": 0.07,
+    "current_expense_ratio_percent": 0.59,
+    "alternative_expense_ratio_percent": 0.03,
+}
 
 # One valid call per tool, for the checks that should hold across all of them.
 VALID_CALLS = [
@@ -65,6 +76,7 @@ VALID_CALLS = [
             "annual_return": 0.05,
         },
     ),
+    (compare_fund_fees, FEE_ARGS),
 ]
 
 # Each tool paired with arguments its underlying finance function rejects.
@@ -84,6 +96,18 @@ INVALID_CALLS = [
     (
         withdrawal_plan_tool,
         {"portfolio_value": 1_000, "annual_withdrawal": 40, "years": 0, "annual_return": 0.05},
+    ),
+    # 59 rather than 0.59: a fraction passed where the percentage belongs, x100.
+    (
+        compare_fund_fees,
+        {
+            "starting_balance": 80_000,
+            "monthly_contribution": 500,
+            "years": 25,
+            "gross_annual_return": 0.07,
+            "current_expense_ratio_percent": 59,
+            "alternative_expense_ratio_percent": 0.03,
+        },
     ),
 ]
 
@@ -261,3 +285,23 @@ class TestWithdrawalPlan:
             annual_return=0.05,
         )
         assert result["survives_horizon"] is True
+
+
+class TestCompareFundFees:
+    def test_takes_percentages_as_get_fund_profile_reports_them(self):
+        """0.59 means 0.59%, the figure get_fund_profile returns, copied as is."""
+        result = call(compare_fund_fees, **FEE_ARGS)
+        assert result["current"]["expense_ratio"] == pytest.approx(0.0059)
+        assert result["current"]["net_annual_return"] == pytest.approx(0.0641)
+
+    def test_returns_the_difference_so_the_model_never_subtracts(self):
+        result = call(compare_fund_fees, **FEE_ARGS)
+        gap = result["alternative"]["ending_balance"] - result["current"]["ending_balance"]
+        assert result["alternative_ending_balance_higher_by"] == pytest.approx(gap, abs=0.01)
+        assert result["alternative_ending_balance_higher_by"] > 0
+
+    def test_the_description_says_which_scale_each_rate_takes(self):
+        description = compare_fund_fees.description
+        assert "expense_ratio_percent" in description
+        assert "PERCENTAGE" in description
+        assert "DECIMAL" in description

@@ -218,90 +218,90 @@ class TestGetQuote:
 
 
 class TestFundProfile:
-    def test_reports_the_raw_expense_ratio_with_its_scale_caveat(self, monkeypatch):
-        """The payload key is `expense_ratio_raw`, not `expense_ratio`.
-
-        yfinance reports the scale inconsistently, so the tool refuses to
-        normalize it and labels the ambiguity instead. The name and the note
-        travel together; a rename that drops either one leaves the model
-        converting a fee to dollars on a guessed scale.
-        """
+    def test_reports_the_expense_ratio_as_a_percentage(self, monkeypatch):
         install(monkeypatch, FakeTicker)
         result = call(get_fund_profile, ticker="vti")
+        assert result["expense_ratio_percent"] == 0.03
         assert result["expense_ratio_raw"] == 0.03
         assert result["expense_ratio_note"]
         assert result["ticker"] == "VTI"
 
-    def test_falls_back_to_the_annual_report_ratio(self, monkeypatch):
-        install(
-            monkeypatch,
-            lambda s: FakeTicker(s, info={"annualReportExpenseRatio": 0.0075}),
-        )
-        assert call(get_fund_profile, ticker="VTI")["expense_ratio_raw"] == 0.0075
+    @pytest.mark.parametrize(
+        ("field", "raw", "percent", "scale"),
+        [
+            ("netExpenseRatio", 0.03, 0.03, "percentage figure (0.03 means 0.03%)"),
+            ("annualReportExpenseRatio", 0.0003, 0.03, "decimal fraction (0.0003 means 0.03%)"),
+            # FXAIX's real value: the fraction field carries float noise.
+            ("annualReportExpenseRatio", 0.00014999999, 0.015, "decimal fraction"),
+        ],
+    )
+    def test_each_field_is_converted_on_its_own_scale(
+        self, monkeypatch, field, raw, percent, scale
+    ):
+        """Regression: the two provider fields use *different* scales.
+
+        `netExpenseRatio` is a percentage figure and `annualReportExpenseRatio`
+        is a decimal fraction. Reported under one scale, a 3bp fund whose feed
+        carries only the fallback came back as "0.0003%", a 100x error. The
+        conversion used to be left to the model with a note naming the scale;
+        now the tool does it, and the raw value and its field stay for audit.
+        """
+        install(monkeypatch, lambda s: FakeTicker(s, info={field: raw}))
+        payload = call(get_fund_profile, ticker="VTI")
+        assert payload["expense_ratio_percent"] == percent
+        assert payload["expense_ratio_raw"] == raw
+        assert payload["expense_ratio_source"] == field
+        assert scale in payload["expense_ratio_note"]
+
+    def test_the_net_ratio_wins_where_both_fields_are_present(self, monkeypatch):
+        info = {"netExpenseRatio": 0.59, "annualReportExpenseRatio": 0.0058999998}
+        install(monkeypatch, lambda s: FakeTicker(s, info=info))
+        payload = call(get_fund_profile, ticker="AGTHX")
+        assert payload["expense_ratio_source"] == "netExpenseRatio"
+        assert payload["expense_ratio_percent"] == 0.59
 
     def test_missing_fields_are_null_rather_than_absent(self, monkeypatch):
         install(monkeypatch, lambda s: FakeTicker(s, info={}))
         result = call(get_fund_profile, ticker="VTI")
-        assert result["expense_ratio_raw"] is None
+        for key in ("expense_ratio_percent", "expense_ratio_raw", "expense_ratio_source"):
+            assert result[key] is None
         assert result["name"] is None
+
+    def test_an_unparseable_value_has_no_percentage(self, monkeypatch):
+        """Kept raw for the user to check, but never converted on a guess."""
+        install(monkeypatch, lambda s: FakeTicker(s, info={"netExpenseRatio": "n/a"}))
+        result = call(get_fund_profile, ticker="VTI")
+        assert result["expense_ratio_percent"] is None
+        assert result["expense_ratio_raw"] == "n/a"
 
     def test_a_provider_failure_returns_an_error_envelope(self, monkeypatch):
         install(monkeypatch, lambda s: FakeTicker(s, raises=RuntimeError("upstream down")))
         assert "error" in call(get_fund_profile, ticker="VTI")
 
-    def test_the_description_names_the_key_the_payload_actually_returns(self, monkeypatch):
+    def test_the_description_names_the_keys_the_payload_actually_returns(self, monkeypatch):
         """The docstring *is* the tool description the model reads.
 
-        It used to promise an `expense_ratio` "as a decimal; 0.0003 means
-        0.03%" while the code emitted `expense_ratio_raw` on the opposite
-        scale -- a model trusting the description would misstate a fee by 100x.
-        Assert the description against the live payload so the two cannot drift
-        apart again.
-
-        The description no longer states a scale of its own, because it cannot:
-        the scale depends on which provider field supplied the value. It names
-        `expense_ratio_source` and defers to the note, and the test below pins
-        the note against that source.
+        It once promised an `expense_ratio` "as a decimal; 0.0003 means 0.03%"
+        while the code emitted `expense_ratio_raw` on the opposite scale -- a
+        model trusting the description would misstate a fee by 100x. Assert the
+        description against the live payload so the two cannot drift apart.
         """
         install(monkeypatch, FakeTicker)
         payload = call(get_fund_profile, ticker="VTI")
         description = get_fund_profile.description
 
-        keys = ("expense_ratio_raw", "expense_ratio_source", "expense_ratio_note")
+        keys = ("percent", "raw", "source", "note")
         for key in keys:
-            assert key in description
-            assert key in payload
-        # No promise of a key the payload does not carry. Matched by suffix
-        # rather than by counting occurrences: the description names each key
-        # where it explains it, so an occurrence count pins how many times the
-        # prose happens to mention them, which is not the invariant.
-        assert not re.findall(r"expense_ratio(?!_raw|_source|_note)", description)
+            assert f"expense_ratio_{key}" in description
+            assert f"expense_ratio_{key}" in payload
+        # No promise of a key the payload does not carry, matched by suffix.
+        assert not re.findall(r"expense_ratio(?!_(?:percent|raw|source|note))", description)
 
-    @pytest.mark.parametrize(
-        ("field", "value", "scale"),
-        [
-            ("netExpenseRatio", 0.03, "percentage figure (0.03 means 0.03%)"),
-            ("annualReportExpenseRatio", 0.0003, "decimal fraction (0.0003 means 0.03%)"),
-        ],
-    )
-    def test_the_note_states_the_scale_of_the_field_the_value_came_from(
-        self, monkeypatch, field, value, scale
-    ):
-        """Regression: the two provider fields use *different* scales.
-
-        `netExpenseRatio` is a percentage figure and `annualReportExpenseRatio`
-        is a decimal fraction, but both were reported under one note asserting
-        the percentage scale as fact. A 3bp fund whose feed carries only the
-        fallback came back as 0.0003 labelled "0.0003%" -- the 100x error the
-        note exists to prevent. The test that pinned the note previously only
-        asserted the same string appeared in two places, so it held the
-        contradiction in place rather than catching it.
-        """
-        install(monkeypatch, lambda s: FakeTicker(s, info={field: value}))
-        payload = call(get_fund_profile, ticker="VTI")
-        assert payload["expense_ratio_raw"] == value
-        assert payload["expense_ratio_source"] == field
-        assert scale in payload["expense_ratio_note"]
+    def test_the_description_leaves_no_conversion_to_the_model(self):
+        """It used to ask the model to translate the fee into dollars itself."""
+        description = get_fund_profile.description
+        assert "compare_fund_fees" in description
+        assert "translate it into dollars" not in description
 
 
 class TestHistoricalReturn:

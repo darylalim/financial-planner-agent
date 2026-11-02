@@ -202,10 +202,61 @@ def test_withdrawal_plan(
         return err(exc)
 
 
+@tool
+def compare_fund_fees(
+    starting_balance: float,
+    monthly_contribution: float,
+    years: int,
+    gross_annual_return: float,
+    current_expense_ratio_percent: float,
+    alternative_expense_ratio_percent: float,
+) -> str:
+    """Compare what two expense ratios cost in dollars over time.
+
+    Call this whenever the user asks what a fund's fee costs them, or how much
+    they would gain by switching to a cheaper fund. Never subtract two
+    `project_savings` results yourself -- this returns the difference.
+
+    Args:
+        starting_balance: Current balance in dollars.
+        monthly_contribution: Dollars added each month.
+        years: Number of years to compare (1-100).
+        gross_annual_return: Expected annual return BEFORE fees, as a DECIMAL
+            (0.07 = 7%).
+        current_expense_ratio_percent: The fee of the fund the user holds, as a
+            PERCENTAGE (0.59 = 0.59%): pass `get_fund_profile`'s
+            expense_ratio_percent as is.
+        alternative_expense_ratio_percent: The fee of the fund being compared,
+            as a PERCENTAGE, likewise.
+
+    Returns:
+        JSON with each fund's ending_balance, total_fees_paid and
+        net_annual_return; alternative_ending_balance_higher_by and
+        alternative_fees_lower_by (negative when the alternative is dearer);
+        total_contributed; and the assumptions to state.
+    """
+    try:
+        return ok(
+            finance.compare_fees(
+                starting_balance=starting_balance,
+                monthly_contribution=monthly_contribution,
+                years=years,
+                gross_annual_return=gross_annual_return,
+                # Percentages in, so the model copies get_fund_profile's figure
+                # rather than moving a decimal point: that move is the 100x error.
+                current_expense_ratio=current_expense_ratio_percent / 100,
+                alternative_expense_ratio=alternative_expense_ratio_percent / 100,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        return err(exc)
+
+
 CALCULATOR_TOOLS = [
     project_savings,
     required_savings_rate,
     loan_payment,
     plan_debt_payoff,
     test_withdrawal_plan,
+    compare_fund_fees,
 ]
