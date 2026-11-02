@@ -408,7 +408,7 @@ class TestTheArithmeticRuleNamesTheFigureTools:
     own: the prompt has to send the model to it. Pins the tools added for the
     figures the model used to compute -- a fee in dollars, a search's total."""
 
-    @pytest.mark.parametrize("name", ["compare_fund_fees", "add_amounts"])
+    @pytest.mark.parametrize("name", ["compare_fund_fees", "add_amounts", "get_historical_return"])
     def test_the_rule_names_the_tool(self, name: str) -> None:
         from financial_planner.prompts import SYSTEM_PROMPT
 
@@ -424,6 +424,18 @@ class TestTheArithmeticRuleNamesTheFigureTools:
         text = " ".join(SYSTEM_PROMPT.split())
         assert "If you put a fund's fee in dollars" in text
         assert "If you need a total or a difference" in text
+        assert "If you describe how much a holding swings" in text
+
+    def test_a_cost_no_tool_returns_is_sent_to_search(self) -> None:
+        """The after-fix batch's AGTHX "5.75%" sales load came from the model's
+        own knowledge. yfinance 1.7.0 has no load field (checked 2026-11-02), so
+        the route is search, worded conditionally like the rules above."""
+        from financial_planner.prompts import SYSTEM_PROMPT
+
+        section = SYSTEM_PROMPT[SYSTEM_PROMPT.index("# Current facts") :]
+        text = " ".join(section[: section.index("# Memory")].split())
+        assert "If you state a sales load, or any fee or limit that no tool gave you" in text
+        assert "`search_web`" in text
 
 
 class TestModelSettings:

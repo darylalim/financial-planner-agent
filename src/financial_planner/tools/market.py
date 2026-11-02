@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import pandas as pd
 import yfinance as yf
 from langchain.tools import tool
 
@@ -183,6 +184,28 @@ def get_fund_profile(ticker: str) -> str:
         return err(exc)
 
 
+def _realized_swings(closes: pd.Series) -> dict[str, float | None]:
+    """The worst and best 12-month returns and the deepest fall in ``closes``.
+
+    Returned so the model can say how much a holding swings without turning
+    the volatility into a range itself: an after-fix live run read an 18%
+    volatility as "swings of 20-30%", a figure no tool produced. These are what
+    actually happened in the window, not a distribution's band.
+
+    A 12-month return is measured from the last close at or before the same
+    date a year earlier, so gaps in the series cannot shorten the year. Null unless
+    the history runs past a year: a 1-year window has no full year to compare.
+    """
+    year_ago = closes.asof(closes.index - pd.DateOffset(years=1))
+    twelve_month = pd.Series(closes.to_numpy() / year_ago.to_numpy() - 1.0).dropna()
+    drawdown = float((closes / closes.cummax() - 1.0).min())
+    return {
+        "worst_12_month_return": round(float(twelve_month.min()), 4) if len(twelve_month) else None,
+        "best_12_month_return": round(float(twelve_month.max()), 4) if len(twelve_month) else None,
+        "max_drawdown": round(drawdown, 4),
+    }
+
+
 @tool
 def get_historical_return(ticker: str, years: int = 10) -> str:
     """Get the realized annualized return and volatility for a ticker.
@@ -192,13 +215,20 @@ def get_historical_return(ticker: str, years: int = 10) -> str:
     `project_savings` -- and tell the user that past returns are an input to the
     assumption, not a forecast.
 
+    If you say how much it swings, quote worst_12_month_return,
+    best_12_month_return and max_drawdown; never turn the volatility into a
+    range yourself.
+
     Args:
         ticker: Symbol to analyze, e.g. "VTI".
         years: Lookback window in years, 1-25. Defaults to 10.
 
     Returns:
-        JSON with annualized_return and annualized_volatility (both decimals),
-        total_return, the window actually covered, and a caveat to relay.
+        JSON with annualized_return and annualized_volatility, total_return,
+        worst_12_month_return and best_12_month_return (null unless the history
+        runs past a year), max_drawdown (the deepest peak-to-trough fall, negative), the
+        window actually covered, and a caveat to relay. Every rate is a
+        decimal: -0.25 means -25%.
     """
     try:
         sym = _clean([ticker])[0]
@@ -245,6 +275,7 @@ def get_historical_return(ticker: str, years: int = 10) -> str:
                 "annualized_return": round(cagr, 4),
                 "annualized_volatility": round(volatility, 4),
                 "total_return": round(total_return, 4),
+                **_realized_swings(closes),
                 "basis": "total return (dividends reinvested, split-adjusted)",
                 "caveat": (
                     "Realized past return over one window. It is an input to a "

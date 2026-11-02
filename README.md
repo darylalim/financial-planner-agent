@@ -65,8 +65,8 @@ person reading it has no way to tell.
 
 Most of those figures come out of `finance.py`, which `tools/calculators.py`
 wraps. Two tools compute their own and never import it: `get_historical_return`
-derives a CAGR and a volatility from a price series, and `summarize_spending`
-aggregates in pandas. They are still tools — the invariant is about *where* a
+derives a CAGR, a volatility and the realized swings from a price series, and
+`summarize_spending` aggregates in pandas. They are still tools — the invariant is about *where* a
 number is computed, not which module computes it.
 
 The system prompt enforces the rule, and every calculation in `finance.py` is
@@ -364,7 +364,7 @@ analysis goes wrong.
 | `read_pdf_text` | Extract a page range from a PDF. **Document-reader only**: the main agent cannot call it |
 | `get_quote` | Current prices for one or more symbols |
 | `get_fund_profile` | Expense ratio (as a percentage, whichever scale the provider used) and category |
-| `get_historical_return` | Realized annualized return over the elapsed calendar span, and volatility scaled by the series' own bar rate |
+| `get_historical_return` | Realized annualized return over the elapsed calendar span, volatility scaled by the series' own bar rate, and the swings that actually happened: worst and best 12-month returns and the deepest fall |
 | `search_web` | Current rates, limits and rules (Tavily) |
 
 Two behaviours do not fit in the table. `get_quote` names the symbols that failed
