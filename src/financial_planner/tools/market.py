@@ -225,6 +225,7 @@ def get_historical_return(ticker: str, years: int = 10) -> str:
 
     Returns:
         JSON with annualized_return and annualized_volatility, total_return,
+        growth_of_1_dollar (what $1 at the start was worth at the end),
         worst_12_month_return and best_12_month_return (null unless the history
         runs past a year), max_drawdown (the deepest peak-to-trough fall, negative), the
         window actually covered, and a caveat to relay. Every rate is a
@@ -275,6 +276,9 @@ def get_historical_return(ticker: str, years: int = 10) -> str:
                 "annualized_return": round(cagr, 4),
                 "annualized_volatility": round(volatility, 4),
                 "total_return": round(total_return, 4),
+                # What $1 became. A live run added 1 to total_return itself to
+                # say "$1 grew to about $4.07", a figure no tool produced.
+                "growth_of_1_dollar": round(end / start, 4),
                 **_realized_swings(closes),
                 "basis": "total return (dividends reinvested, split-adjusted)",
                 "caveat": (
