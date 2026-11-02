@@ -428,6 +428,15 @@ class TestCompareFees:
         fees = result["current"]["total_fees_paid"]
         assert 0 < fees < gap
 
+    def test_the_gap_splits_into_fees_and_lost_growth(self):
+        """Answers explain the gap this way; the model subtracted to do it."""
+        result = compare_fees(
+            **self.BASE, current_expense_ratio=0.0059, alternative_expense_ratio=0.0003
+        )
+        parts = result["alternative_fees_lower_by"] + result["growth_lost_on_the_fee_difference"]
+        assert parts == pytest.approx(result["alternative_ending_balance_higher_by"], abs=0.01)
+        assert result["growth_lost_on_the_fee_difference"] > 0
+
     def test_a_dearer_alternative_is_a_negative_gap(self):
         result = compare_fees(
             **self.BASE, current_expense_ratio=0.0003, alternative_expense_ratio=0.0059

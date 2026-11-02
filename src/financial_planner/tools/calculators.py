@@ -233,9 +233,10 @@ def compare_fund_fees(
 
     Returns:
         JSON with each fund's ending_balance, total_fees_paid and
-        net_annual_return; alternative_ending_balance_higher_by and
-        alternative_fees_lower_by (negative when the alternative is dearer);
-        total_contributed; and the assumptions to state.
+        net_annual_return; alternative_ending_balance_higher_by, which splits
+        into alternative_fees_lower_by and growth_lost_on_the_fee_difference
+        (all negative when the alternative is dearer); total_contributed; and
+        the assumptions to state.
     """
     try:
         return ok(
