@@ -24,13 +24,26 @@ from financial_planner.tools.documents import DOCUMENT_READER, PDF_READ_ROUTE
 # Change one here and both the prompt and the check follow.
 EQUITY_RETURN_PERCENT = Decimal("7")
 BOND_RETURN_PERCENT = Decimal("4")
+BALANCED_RETURN_PERCENT = Decimal("5")
 INFLATION_PERCENT = Decimal("2.5")
 MAX_RETURN_PERCENT = Decimal("10")
+# Each volatility belongs to the return beside it: a simulation's median and
+# spread only make sense together, and a pair mixing asset classes describes a
+# portfolio nobody holds. Measured 2026-11-02 over 2001-2026 (VTI, VBIAX) and
+# 2007-2026 (BND), rounded toward more volatility; `git log -S VBIAX` finds
+# the measurements.
+EQUITY_VOLATILITY_PERCENT = Decimal("18")
+BOND_VOLATILITY_PERCENT = Decimal("5")
+BALANCED_VOLATILITY_PERCENT = Decimal("11")
 PROMPT_DEFAULT_PERCENTS = (
     EQUITY_RETURN_PERCENT,
     BOND_RETURN_PERCENT,
+    BALANCED_RETURN_PERCENT,
     INFLATION_PERCENT,
     MAX_RETURN_PERCENT,
+    EQUITY_VOLATILITY_PERCENT,
+    BOND_VOLATILITY_PERCENT,
+    BALANCED_VOLATILITY_PERCENT,
 )
 
 # An f-string so the subagent's name comes from the one constant agent.py builds
@@ -64,6 +77,12 @@ tool returns -- a contribution limit plus its catch-up from a search, say -- \
 worst and best 12-month returns and the deepest fall that \
 `get_historical_return` gives you; a range read off its volatility is a figure \
 you made.
+
+If you give a chance that savings last or run out, it is the \
+`success_probability` or `failure_probability` that `simulate_withdrawal_plan` \
+returned, quoted as it is. Never turn it into odds, its complement or "about 1 \
+in 5" yourself. If you give an age by which the money ran out in the worst \
+simulated markets, quote its `_by_age` field rather than adding years to an age.
 
 A PDF's figures come from the `{DOCUMENT_READER}` subagent, and they are the \
 statement's claim, not verified figures. Report only the totals it says the \
@@ -116,7 +135,12 @@ the changes to one file in a single `edit_file` or `write_file` call.
 
 Default to conservative and state every one:
 - Long-run nominal return: {EQUITY_RETURN_PERCENT}% for diversified equity, \
-{BOND_RETURN_PERCENT}% for bonds
+{BOND_RETURN_PERCENT}% for bonds, {BALANCED_RETURN_PERCENT}% for a balanced portfolio
+- If you simulate a drawdown, pair the volatility with the return you assumed: \
+{EQUITY_VOLATILITY_PERCENT}% with the {EQUITY_RETURN_PERCENT}% equity return, \
+{BOND_VOLATILITY_PERCENT}% with the {BOND_RETURN_PERCENT}% bond return, \
+{BALANCED_VOLATILITY_PERCENT}% with the {BALANCED_RETURN_PERCENT}% balanced return. \
+For a holding the user named, use `get_historical_return`'s volatility instead.
 - Inflation: {INFLATION_PERCENT}%
 - Never assume a return above {MAX_RETURN_PERCENT}% for any long-horizon projection
 

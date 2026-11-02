@@ -138,6 +138,11 @@ class TestBoundTools:
         """Catches tools arriving from a library upgrade as well as leaving."""
         assert bound_tool_names(agent) == {t.name for t in ALL_TOOLS} | HARNESS_TOOLS
 
+    def test_the_drawdown_simulation_is_bound(self, agent: Any) -> None:
+        """By name, so the prompt's probability rule never names a tool the
+        agent does not have."""
+        assert "simulate_withdrawal_plan" in bound_tool_names(agent)
+
     def test_the_main_agent_cannot_read_pdf_text(self, agent: Any) -> None:
         """The quarantine. The main agent can write -- to /AGENTS.md, the memory
         every later session loads -- so a PDF's text reaching it is one injected
@@ -185,6 +190,9 @@ class TestSubagentInheritsTheNarrowedFilesystem:
 
     def test_the_subagent_can_still_do_the_finance_work(self, agent: Any) -> None:
         assert {t.name for t in ALL_TOOLS} <= subagent_tool_names(agent)
+
+    def test_the_subagent_can_simulate_a_drawdown(self, agent: Any) -> None:
+        assert "simulate_withdrawal_plan" in subagent_tool_names(agent)
 
     def test_the_subagent_cannot_read_pdf_text(self, agent: Any) -> None:
         """It inherits the main tool list and can write, so a PDF reader left
@@ -408,7 +416,10 @@ class TestTheArithmeticRuleNamesTheFigureTools:
     own: the prompt has to send the model to it. Pins the tools added for the
     figures the model used to compute -- a fee in dollars, a search's total."""
 
-    @pytest.mark.parametrize("name", ["compare_fund_fees", "add_amounts", "get_historical_return"])
+    @pytest.mark.parametrize(
+        "name",
+        ["compare_fund_fees", "add_amounts", "get_historical_return", "simulate_withdrawal_plan"],
+    )
     def test_the_rule_names_the_tool(self, name: str) -> None:
         from financial_planner.prompts import SYSTEM_PROMPT
 
@@ -425,6 +436,32 @@ class TestTheArithmeticRuleNamesTheFigureTools:
         assert "If you put a fund's fee in dollars" in text
         assert "If you need a total or a difference" in text
         assert "If you describe how much a holding swings" in text
+        assert "If you give a chance that savings last or run out" in text
+        assert "If you give an age by which the money ran out" in text
+
+    def test_a_probability_is_never_reworded_by_the_model(self) -> None:
+        """Plan decision 10: "a 19% chance of running out" from a 0.81 success
+        is a subtraction, and "about 1 in 5" is a conversion."""
+        from financial_planner.prompts import SYSTEM_PROMPT
+
+        text = " ".join(SYSTEM_PROMPT.split())
+        assert "`failure_probability`" in text
+        assert 'Never turn it into odds, its complement or "about 1 in 5" yourself' in text
+
+    def test_each_volatility_is_stated_beside_its_return(self) -> None:
+        """Plan decision 8: a simulation's median and spread only make sense
+        together. Stated apart, the model could pair the 18% equity volatility
+        with the 5% balanced return, a portfolio nobody holds."""
+        from financial_planner import prompts
+
+        text = " ".join(prompts.SYSTEM_PROMPT.split())
+        for volatility, ret, kind in (
+            (prompts.EQUITY_VOLATILITY_PERCENT, prompts.EQUITY_RETURN_PERCENT, "equity"),
+            (prompts.BOND_VOLATILITY_PERCENT, prompts.BOND_RETURN_PERCENT, "bond"),
+            (prompts.BALANCED_VOLATILITY_PERCENT, prompts.BALANCED_RETURN_PERCENT, "balanced"),
+        ):
+            assert f"{volatility}% with the {ret}% {kind} return" in text
+        assert "If you simulate a drawdown" in text
 
     def test_a_cost_no_tool_returns_is_sent_to_search(self) -> None:
         """The after-fix batch's AGTHX "5.75%" sales load came from the model's

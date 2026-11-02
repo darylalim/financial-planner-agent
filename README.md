@@ -356,7 +356,8 @@ analysis goes wrong.
 | `required_savings_rate` | Solve for the monthly contribution to hit a goal |
 | `loan_payment` | Mortgage/auto/student payment and lifetime interest |
 | `plan_debt_payoff` | Multi-debt simulation, avalanche or snowball |
-| `test_withdrawal_plan` | Retirement drawdown sustainability |
+| `test_withdrawal_plan` | Retirement drawdown sustainability, one year-by-year path |
+| `simulate_withdrawal_plan` | The same drawdown over 10,000 seeded random markets: the probability it lasts, percentile ending balances, and when the worst paths run out |
 | `compare_fund_fees` | What one expense ratio costs against another, in dollars over time |
 | `add_amounts` | Totals of figures no other tool produced, such as a limit and its catch-up from a search |
 | `inspect_document` | Schema and preview of a CSV/XLSX; the structure, never the text, of a PDF |
@@ -626,9 +627,14 @@ untrusted pull requests, holds a read-only token.
 
 ## Known limits
 
-- `test_withdrawal_plan` walks a **single deterministic path**, not a Monte Carlo
-  simulation. It ignores sequence-of-returns risk, the dominant risk in early
-  retirement. Surviving it is necessary, not sufficient.
+- `test_withdrawal_plan` walks a **single deterministic path**. It ignores
+  sequence-of-returns risk, the dominant risk in early retirement. Surviving it is
+  necessary, not sufficient; `simulate_withdrawal_plan` gives the probability.
+- `simulate_withdrawal_plan` is a model, not a forecast. Yearly returns are
+  lognormal around one assumed return and volatility for the whole portfolio, with
+  no asset mix, rebalancing, fees or taxes, and inflation is fixed. A named
+  holding's volatility comes from daily returns, which overstates the yearly
+  spread for some funds.
 - `get_fund_profile` reports the provider's raw expense-ratio value, which
   yfinance scales inconsistently. Confirm against the fund factsheet.
 - US conventions throughout: APR quoting, IRS limits, Social Security.

@@ -193,7 +193,8 @@ def test_withdrawal_plan(
     IMPORTANT: this is one deterministic path, not a Monte Carlo simulation. It
     ignores sequence-of-returns risk, the dominant risk in early retirement.
     Always relay the returned caveat -- surviving this test is a necessary but
-    not sufficient condition for a plan being safe.
+    not sufficient condition for a plan being safe. `simulate_withdrawal_plan`
+    gives the probability; this gives the year-by-year path.
 
     Args:
         portfolio_value: Portfolio value at retirement, in dollars.
@@ -219,6 +220,77 @@ def test_withdrawal_plan(
                 annual_withdrawal=annual_withdrawal,
                 monthly_withdrawal=monthly_withdrawal,
                 annual_inflation=annual_inflation,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        return err(exc)
+
+
+# Fixed, so the same question gets the same probability in every turn, rerun
+# and test. A figure that moved from 81% to 79% on a re-ask would read as the
+# agent changing its mind.
+SIMULATION_SEED = 20261102
+
+
+@tool
+def simulate_withdrawal_plan(
+    portfolio_value: float,
+    years: int,
+    annual_return: float,
+    annual_volatility: float,
+    annual_withdrawal: float | None = None,
+    monthly_withdrawal: float | None = None,
+    annual_inflation: float = 0.025,
+    retirement_age: int | None = None,
+) -> str:
+    """Simulate a retirement drawdown over 10,000 random markets.
+
+    Call this when the user asks how likely their savings are to last, or what
+    happens if markets go badly early in retirement. It gives the probability
+    of success; `test_withdrawal_plan` gives the single year-by-year path.
+    Each year's return is random around annual_return, so bad years can land
+    early. The seed is fixed: the same inputs always give the same result.
+
+    Args:
+        portfolio_value: Portfolio value at retirement, in dollars.
+        years: Length of retirement to simulate.
+        annual_return: Median annual return as a DECIMAL (0.05 = 5%).
+        annual_volatility: Standard deviation of yearly returns as a DECIMAL
+            (0.11 = 11%). Use the default paired with the return you assumed,
+            or `get_historical_return`'s annualized_volatility for a named
+            holding (built from daily returns, an approximation that errs
+            toward more volatility).
+        annual_withdrawal: First-year withdrawal per year, in dollars; grows
+            with inflation. Give this OR monthly_withdrawal, not both.
+        monthly_withdrawal: First-year withdrawal per month, in dollars. Pass a
+            monthly figure as is -- do not multiply it by 12 yourself.
+        annual_inflation: Annual inflation as a decimal, fixed for every year.
+            Defaults to 0.025.
+        retirement_age: Age at the start of the drawdown. Optional; give it and
+            depletion is also returned as ages.
+
+    Returns:
+        JSON with success_probability and failure_probability (decimals);
+        ending_balance and ending_balance_real (today's dollars), each at the
+        10th_percentile, median and 90th_percentile;
+        worst_10_percent_depleted_by_year and worst_25_percent_depleted_by_year
+        (null when fewer paths than that ran out); given retirement_age, the
+        same as _by_age plus horizon_end_age; the first-year withdrawal
+        annually and monthly and initial_withdrawal_rate; the inputs, paths and
+        seed; assumptions to state; and a caveat to relay.
+    """
+    try:
+        return ok(
+            finance.simulate_withdrawal(
+                portfolio_value=portfolio_value,
+                years=years,
+                annual_return=annual_return,
+                annual_volatility=annual_volatility,
+                annual_withdrawal=annual_withdrawal,
+                monthly_withdrawal=monthly_withdrawal,
+                annual_inflation=annual_inflation,
+                retirement_age=retirement_age,
+                seed=SIMULATION_SEED,
             )
         )
     except Exception as exc:  # noqa: BLE001
@@ -308,6 +380,7 @@ CALCULATOR_TOOLS = [
     loan_payment,
     plan_debt_payoff,
     test_withdrawal_plan,
+    simulate_withdrawal_plan,
     compare_fund_fees,
     add_amounts,
 ]
