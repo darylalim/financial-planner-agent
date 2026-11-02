@@ -339,7 +339,7 @@ the theme's two modes, its no-web-fonts rule and its WCAG AA contrast.
 
 Three workflows in `agent_home/skills/`, loaded only when relevant:
 
-- `retirement-readiness` — project, then test the drawdown, then quantify the gap.
+- `retirement-readiness` — project, test the drawdown, simulate it once for a probability, then quantify the gap.
 - `budget-from-statements` — verify sign conventions, then aggregate.
 - `debt-strategy` — avalanche vs snowball, then debt-vs-investing.
 
