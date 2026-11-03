@@ -517,7 +517,7 @@ class TestEstimatesAreWholeDollars:
         assert "`retirement_age`" in skill
 
     def test_the_retirement_skill_simulates_on_the_balanced_pair(self):
-        """Decision 11: the skill's pair is the prompt's balanced default, so a
+        """The skill's pair is the prompt's balanced default, so a
         default changed in prompts.py cannot leave the skill quoting the old one."""
         skill = (
             Path(__file__).resolve().parents[1] / "agent_home/skills/retirement-readiness/SKILL.md"

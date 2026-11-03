@@ -373,6 +373,47 @@ and errors only if none resolve, so one bad ticker does not lose the rest. And
 document tools **summarize rather than dump**: a year of transactions is 5,000+
 rows, and returning them raw would crowd out the rest of the session.
 
+### The drawdown simulation
+
+`simulate_withdrawal_plan` sits beside `test_withdrawal_plan` rather than replacing
+it. A probability alone hides *when* the money runs out on the expected path, and that
+year-by-year path is what a person can check against their own sense of the plan. It
+is a second tool, not a `simulate=True` flag, so neither tool has two payload shapes.
+
+Returns are drawn from a lognormal whose median is the user's assumed rate, not
+bootstrapped from history. `get_historical_return`'s window is at most 25 years, too
+few independent annual draws. A bootstrap would also put the network inside a
+calculator and quietly swap the user's assumption for one fund's past. Inflation stays
+fixed for the same reason: a second distribution the user never sees is one they
+cannot push back on. The simulation uses the standard library's `random`, so
+`finance.py` keeps no dependencies. Why the seed is fixed and why probabilities have
+two decimals is in `finance.simulate_withdrawal`'s docstring.
+
+Each volatility default belongs to a return default (`prompts.py`), because a median
+and a spread mixed from two asset classes describe a portfolio nobody holds. The
+values were measured on 2026-11-02 and rounded to a whole percent. `vol` is
+`get_historical_return`'s method (daily returns, annualized); `yearly` is the spread of
+calendar-year returns, which is what a yearly simulation needs:
+
+| Fund | Stands for | Window | `vol` | `yearly` | Default |
+|---|---|---|---|---|---|
+| VTI | equity (7%) | 2001–2026 | 19.0% | 17.8% | 18% |
+| BND | bonds (4%) | 2007–2026 | 5.2% | 5.2% | 5% |
+| VBIAX | 60/40 balanced (5%) | 2001–2026 | 11.3% | 11.6% | 11% |
+| AOR | 60/40 balanced | 2008–2026 | 12.5% | 9.4% | — |
+
+VBIAX sets the balanced value, not AOR: AOR began after the 2008 crash, so its yearly
+spread leaves out the worst year a balanced fund has had. Equity and balanced round
+up from the yearly spread; bonds round down by 0.2 points, which moved a 30-year
+bond drawdown's probability by at most one point across 4–7% withdrawal rates. The retirement skill simulates once, on
+the balanced pair and the conservative projection. Two probabilities beside the 7%/5%
+spread would bury the verdict.
+
+The tool takes one return and one volatility. A 60/40 portfolio's volatility is not a
+weighted average of its parts, so blending an allocation in the model would be model
+arithmetic. If live runs show the model doing it, the fix is a tool that takes an
+allocation and a stated correlation.
+
 ### Narrowing the built-ins
 
 The agent also gets the Deep Agents built-ins: `write_todos`, `ls`, `read_file`,
