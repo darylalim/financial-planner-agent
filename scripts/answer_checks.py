@@ -236,6 +236,11 @@ def unsourced_figures(
     return [f.text for f in answer_figures(answer) if not is_sourced(f, sources)]
 
 
+# Long enough for any calculator's arguments, add_amounts' list of a statement's
+# categories included, so only a file tool's content is ever cut.
+TOOL_INPUT_CHARS = 600
+
+
 def tool_input_only(answer: str, unsourced: Iterable[str], tool_inputs: Iterable[str]) -> list[str]:
     """The ``unsourced`` figures that match a value the model passed *into* a tool.
 
@@ -247,6 +252,20 @@ def tool_input_only(answer: str, unsourced: Iterable[str], tool_inputs: Iterable
     inputs = source_numbers(tool_inputs, [])
     wanted = set(unsourced)
     return [f.text for f in answer_figures(answer) if f.text in wanted and is_sourced(f, inputs)]
+
+
+def tool_input_line(name: str, agent: str, tool_input: str) -> str:
+    """One call's arguments, for a person reading a run.
+
+    The check cannot do this reading for them: an input the tool echoes back is
+    sourced by that echo, and a choice like the drawdown's return appears in no
+    answer at all. The cap is for the file tools, whose ``content`` can run to a
+    whole document; a cut says so, because a figure past it would otherwise look
+    as though it was never passed.
+    """
+    cut = len(tool_input) - TOOL_INPUT_CHARS
+    shown = f"{tool_input[:TOOL_INPUT_CHARS]}... ({cut} more chars)" if cut > 0 else tool_input
+    return f"{name} ({agent}) {shown}"
 
 
 def missing_tools(scenario: str, ran: Iterable[str]) -> list[str]:

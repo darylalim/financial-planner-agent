@@ -230,6 +230,32 @@ class TestToolInputsAreNotASource:
         assert checks.tool_input_only(answer, unsourced, inputs) == []
 
 
+class TestToolInputLine:
+    """What a person reads a run's arguments from. A retirement run's verdict
+    flipped on a drawdown return no answer stated, and only the input showed it."""
+
+    CALL = str({"portfolio_value": 1200000.0, "annual_return": 0.07, "retirement_age": 62})
+
+    def test_it_names_the_tool_the_agent_and_every_argument(self):
+        line = checks.tool_input_line("test_withdrawal_plan", "general-purpose", self.CALL)
+        assert line == f"test_withdrawal_plan (general-purpose) {self.CALL}"
+
+    def test_a_calculators_arguments_are_never_cut(self):
+        """A statement's categories are the longest calculator input there is."""
+        amounts = str({"amounts": [1234.56] * 30, "labels": ["groceries"] * 15})
+        line = checks.tool_input_line("add_amounts", "financial-planner", amounts)
+        assert line.endswith(amounts)
+
+    def test_input_at_the_cap_is_whole(self):
+        text = "x" * checks.TOOL_INPUT_CHARS
+        assert checks.tool_input_line("t", "a", text) == f"t (a) {text}"
+
+    def test_a_cut_says_how_much_is_missing(self):
+        text = "x" * (checks.TOOL_INPUT_CHARS + 25)
+        line = checks.tool_input_line("write_file", "a", text)
+        assert line == f"write_file (a) {'x' * checks.TOOL_INPUT_CHARS}... (25 more chars)"
+
+
 class TestExpectedTools:
     def test_every_expected_tool_exists(self):
         """A misspelled name would fail the scenario on every run, forever.

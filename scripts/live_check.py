@@ -99,7 +99,12 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 import anthropic  # noqa: E402
 import httpx2  # noqa: E402
-from answer_checks import missing_tools, tool_input_only, unsourced_figures  # noqa: E402
+from answer_checks import (  # noqa: E402
+    missing_tools,
+    tool_input_line,
+    tool_input_only,
+    unsourced_figures,
+)
 from batch import RunResult, exit_status, run_once_with_retry  # noqa: E402
 from langchain_core.callbacks import BaseCallbackHandler  # noqa: E402
 from langchain_core.messages import AIMessage, ToolMessage  # noqa: E402
@@ -527,6 +532,10 @@ def run_scenario(name: str, turns: list[str], model: str) -> RunResult:
         print(f"\n  tools: {tools}")
         if delegated:
             print(f"  delegated: {delegated}")
+        # Read these for arithmetic: a figure the tool echoes back is sourced by
+        # the echo, so the unsourced-figure check cannot see it.
+        for call in recorder.calls:
+            print(f"     {tool_input_line(call.name, call.agent, call.input)}")
         print(f"  elapsed: {time.time() - started:.1f}s   answer chars: {len(answer)}")
         print(f"  unsourced figures: {len(unsourced)} {unsourced if unsourced else ''}")
         if as_input:
