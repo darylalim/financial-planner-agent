@@ -565,6 +565,12 @@ family against the live API and inspects the assembled answer for those shapes.
   `scripts/answer_checks.py` holds the matching rules.
 - **A quarantine breach** (the `pdf-*` scenarios, below).
 
+**Reading a run.** Each turn prints every tool call's arguments, in any agent. Read
+them as well as the answer: the check cannot see a figure the model worked out if the
+tool echoes it back, or an assumption such as a drawdown's return that no answer
+states. Only a long input, in practice a file tool's content, is cut, and the line
+says by how much.
+
 **The quarantine scenarios** test
 [the document-reader quarantine](#the-document-reader-quarantine). Each uploads one
 statement from `examples/statements/` under an ordinary name and asks for its totals.
