@@ -88,14 +88,18 @@ the payment.
 - Monthly income — the `average_monthly_inflow` field
 - Monthly spending by category — `by_category_monthly_average`, largest first
 - Savings rate — the `savings_rate` field
-- Fixed versus discretionary, when categories permit
+- Fixed versus discretionary, when categories permit — each group's total is the
+  `total` from `add_amounts`, given that group's `by_category_monthly_average`
+  values
 
 Rows with a blank category arrive under `Uncategorized`. If that bucket is large
 enough to change the picture, say so — it is unclassified spending, not an
 absence of it.
 
-`summarize_spending` returns every one of those figures already computed. Report
-what it returns; do not divide its totals yourself. Check `months_covered` and
+`summarize_spending` returns the first three figures already computed. If you do
+split fixed from discretionary, call `add_amounts` for each group before writing
+either total anywhere, the breakdown file included. Report what the tools return;
+do not add or divide their figures yourself. Check `months_covered` and
 `period` before calling an average typical, and mention `undated_transactions`
 if it appears — those rows are in the totals but not in the averages.
 
