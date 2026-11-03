@@ -97,7 +97,11 @@ figure no tool produced.
 live check says what counts as sourced. The prompt's stated defaults are among the
 sources, read from `prompts.PROMPT_DEFAULT_PERCENTS`, so change a default there, never in
 the prompt's prose. A value the model passed *into* a tool is never a source: a figure it
-computed and then handed to a calculator is still its own arithmetic. Every source the
+computed and then handed to a calculator is still its own arithmetic. The check cannot
+enforce that when the tool **echoes the input back**: the output then sources it. A
+retirement run passed `$6,500 − $2,500` to `simulate_withdrawal_plan` as `$4,000` and
+went green. The echoes stay, because they carry the assumptions to state, so when
+reading a live run, read the tool *inputs* for arithmetic too. Every source the
 checker accepts is a hole in the check. **Read an unsourced
 figure before writing a rule for it**: every one found so far was a tool that did not
 return a figure people ask for, fixed in the tool. Add a source to
