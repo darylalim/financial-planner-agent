@@ -103,6 +103,17 @@ class TestProvenance:
         assert _unsourced("a 7% return", {"annualized_return": 0.07}) == []
         assert _unsourced("a savings rate of 43.08%", {"savings_rate": 0.4308}) == []
 
+    def test_a_ratio_is_judged_by_its_true_value(self):
+        """Recorded in #28: rent of $1,850 on $4,200 income, from
+        examples/sample-transactions.csv. The answer said "44.0%"; the tool,
+        rounding to four decimals, returned 0.4405, which the check rounds
+        half-up to 44.1%. Unrounded, the right figure passes and the wrong one
+        fails."""
+        share = {"by_category_share_of_income": {"Housing": 1850 / 4200}}
+        assert _unsourced("Rent is 44.0% of your income.", share) == []
+        assert _unsourced("Rent is 44.1% of your income.", share) == ["44.1%"]
+        assert _unsourced("Rent is 44.05% of your income.", share) == []
+
     def test_trailing_zeros_allow_the_rounding_they_show(self):
         assert _unsourced("roughly $2,400 a month", {"monthly_spend": 2390.8}) == []
 

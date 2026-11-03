@@ -638,8 +638,15 @@ def summarize_spending(
         # The savings rate is the figure most budget questions actually want.
         # Returning it here keeps the model from dividing, which the system
         # prompt forbids and which it would otherwise have no tool for.
+        #
+        # Ratios are returned unrounded, unlike the dollar figures. An answer
+        # shows them as a percentage at a precision the model picks, so any
+        # rounding here is a first rounding with a second one after it. At four
+        # decimals, rent of 1850 on 4200 income (44.0476%) came back as 0.4405:
+        # the model's correct "44.0%" then failed the live check, which rounds
+        # 44.05 half-up, and the wrong "44.1%" passed (#28).
         if inflow > 0 and income_known:
-            result["savings_rate"] = round((inflow - outflow) / inflow, 4)
+            result["savings_rate"] = (inflow - outflow) / inflow
 
         if category_column:
             df = df.assign(_category=_category_labels(df[category_column]))
@@ -648,9 +655,7 @@ def summarize_spending(
             by_cat = {str(k): round(float(v), 2) for k, v in grouped.items()}
             result["by_category"] = by_cat
             if inflow > 0 and income_known:
-                result["by_category_share_of_income"] = {
-                    k: round(v / inflow, 4) for k, v in by_cat.items()
-                }
+                result["by_category_share_of_income"] = {k: v / inflow for k, v in by_cat.items()}
 
         if date_column:
             # Numeric columns are rejected before parsing rather than after.
