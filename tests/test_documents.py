@@ -8,6 +8,7 @@ a realistic route to a traversal attempt.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -289,6 +290,33 @@ class TestDerivedRatios:
             category_column="Category",
         )
         assert "Paycheck" not in json.dumps(result)
+
+    def test_every_figure_the_budget_skill_lists_names_its_source(self, sample_csv):
+        """A skill that names a figure must name the field that returns it.
+
+        Step 4 listed "Fixed versus discretionary" with no source and then said
+        summarize_spending returned every figure. A live run summed the fixed
+        costs itself, wrote that sum to the breakdown file, and only then
+        called add_amounts to vouch for it (#26).
+        """
+        from financial_planner.tools.calculators import CALCULATOR_TOOLS
+
+        result = _call(
+            summarize_spending,
+            path=sample_csv,
+            amount_column="Amount",
+            category_column="Category",
+            date_column="Date",
+        )
+        sources = set(result) | {tool.name for tool in CALCULATOR_TOOLS}
+        text = SKILL_PATH.read_text(encoding="utf-8")
+        step = text.split("### 4. Build the picture", 1)[1].split("\n\n", 2)[1]
+        bullets = [" ".join(b.split()) for b in step.split("\n- ")]
+        assert len(bullets) == 4, bullets
+        for bullet in bullets:
+            named = set(re.findall(r"`([a-z_]+)`", bullet))
+            assert named & sources, bullet
+        assert "`add_amounts`" in bullets[-1]
 
 
 class TestMonthlyAveragesFoundByReview:
