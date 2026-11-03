@@ -440,8 +440,8 @@ class TestTheArithmeticRuleNamesTheFigureTools:
         assert "If you give an age by which the money ran out" in text
 
     def test_a_probability_is_never_reworded_by_the_model(self) -> None:
-        """Plan decision 10: "a 19% chance of running out" from a 0.81 success
-        is a subtraction, and "about 1 in 5" is a conversion."""
+        """Turning a 0.81 success into "a 19% chance of running out" is a
+        subtraction, and into "about 1 in 5" a conversion."""
         from financial_planner.prompts import SYSTEM_PROMPT
 
         text = " ".join(SYSTEM_PROMPT.split())
@@ -451,7 +451,7 @@ class TestTheArithmeticRuleNamesTheFigureTools:
         assert 'Never turn it into odds, its complement or "about 1 in 5" yourself' in text
 
     def test_each_volatility_is_stated_beside_its_return(self) -> None:
-        """Plan decision 8: a simulation's median and spread only make sense
+        """A simulation's median and spread only make sense
         together. Stated apart, the model could pair the 18% equity volatility
         with the 5% balanced return, a portfolio nobody holds."""
         from financial_planner import prompts

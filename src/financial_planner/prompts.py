@@ -29,9 +29,8 @@ INFLATION_PERCENT = Decimal("2.5")
 MAX_RETURN_PERCENT = Decimal("10")
 # Each volatility belongs to the return beside it: a simulation's median and
 # spread only make sense together, and a pair mixing asset classes describes a
-# portfolio nobody holds. Measured 2026-11-02 over 2001-2026 (VTI, VBIAX) and
-# 2007-2026 (BND), rounded toward more volatility; `git log -S VBIAX` finds
-# the measurements.
+# portfolio nobody holds. The measurements behind them are in README -> The
+# drawdown simulation.
 EQUITY_VOLATILITY_PERCENT = Decimal("18")
 BOND_VOLATILITY_PERCENT = Decimal("5")
 BALANCED_VOLATILITY_PERCENT = Decimal("11")

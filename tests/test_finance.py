@@ -346,7 +346,7 @@ class TestSimulateWithdrawal:
         assert abs(a - b) <= 0.02
 
     def test_the_median_path_compounds_at_the_assumed_return(self):
-        """Decision 2: the median growth is the user's rate, so the simulation's
+        """The median growth is the user's rate, so the simulation's
         middle agrees with the single path they can follow year by year."""
         result = simulate_withdrawal(
             portfolio_value=1_000_000,
@@ -408,7 +408,7 @@ class TestSimulateWithdrawal:
         assert wild["success_probability"] < calm["success_probability"]
 
     def test_probabilities_are_two_decimals_and_add_to_one(self):
-        """Decision 6: a whole percent is honest at 10,000 paths. Both are
+        """A whole percent is honest at 10,000 paths. Both are
         returned so "a 19% chance of running out" is never 1 - 0.81."""
         result = simulate_withdrawal(**EDGE_PLAN, seed=6)
         for key in ("success_probability", "failure_probability"):
