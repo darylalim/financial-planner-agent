@@ -261,6 +261,16 @@ class TestDerivedRatios:
         assert result["by_category_monthly_average"]["Housing"] == pytest.approx(1_850.00)
         assert result["by_category_share_of_income"]["Housing"] == pytest.approx(0.4405, abs=1e-4)
 
+    def test_ratios_are_not_rounded_before_the_answer_rounds_them(self, sample_csv):
+        """Rent of 3700 on 8400 income is 44.0476%. Rounded to four decimals it
+        came back as 0.4405, and the model's correct "44.0%" failed the live
+        check while "44.1%" passed (#28). The answer does the only rounding."""
+        result = _call(
+            summarize_spending, path=sample_csv, amount_column="Amount", category_column="Category"
+        )
+        assert result["by_category_share_of_income"]["Housing"] == 3_700 / 8_400
+        assert result["savings_rate"] == (8_400 - 4_100) / 8_400
+
     def test_period_span_is_reported_so_partial_months_are_visible(self, sample_csv):
         result = _call(
             summarize_spending,
