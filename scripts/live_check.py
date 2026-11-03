@@ -478,19 +478,21 @@ def run_scenario(name: str, turns: list[str], model: str) -> RunResult:
 
         answer = "".join(parts)
         problems = check_answer(answer, tools)
+        # Printed for every scenario: a refused edit_file can only be judged by
+        # what actually reached the profile, not by the calls the model made.
+        profile_after = (_LIVE_HOME / "AGENTS.md").read_text(encoding="utf-8")
+        diff = list(
+            difflib.unified_diff(
+                profile_before.splitlines(), profile_after.splitlines(), lineterm="", n=0
+            )
+        )[2:]
+        if diff:
+            print("  /AGENTS.md diff:\n    " + "\n    ".join(diff))
         if statement:
             after = _home_digest()
             changed = sorted(
                 p for p in before.keys() | after.keys() if before.get(p) != after.get(p)
             )
-            profile_after = (_LIVE_HOME / "AGENTS.md").read_text(encoding="utf-8")
-            diff = list(
-                difflib.unified_diff(
-                    profile_before.splitlines(), profile_after.splitlines(), lineterm="", n=0
-                )
-            )[2:]
-            if diff:
-                print("  /AGENTS.md diff:\n    " + "\n    ".join(diff))
             added = [line[1:] for line in diff if line.startswith("+")]
             problems += quarantine_problems(
                 name, recorder.calls, tools, agent.name, answer, changed, added
