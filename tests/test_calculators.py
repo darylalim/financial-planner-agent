@@ -309,6 +309,22 @@ class TestWithdrawalPlan:
         )
         assert result["survives_horizon"] is True
 
+    def test_a_retirement_age_comes_back_as_ages(self):
+        result = call(
+            withdrawal_plan_tool,
+            portfolio_value=200_000,
+            annual_withdrawal=80_000,
+            years=30,
+            annual_return=0.05,
+            retirement_age=65,
+        )
+        assert result["depleted_by_age"] == 65 + result["depleted_in_year"]
+        assert result["horizon_end_age"] == 95
+
+    def test_the_description_names_the_age_fields(self):
+        for field in ("retirement_age", "depleted_by_age", "horizon_end_age"):
+            assert field in withdrawal_plan_tool.description
+
 
 class TestSimulateWithdrawalPlan:
     def test_the_seed_is_fixed_so_a_re_ask_gets_the_same_answer(self):
@@ -515,6 +531,24 @@ class TestEstimatesAreWholeDollars:
             assert f"`{field}`" in skill, field
             assert field in result, field
         assert "`retirement_age`" in skill
+
+    def test_the_retirement_skill_tests_the_drawdown_on_fields_the_tool_returns(self):
+        """A skill that names a figure must name a field that returns it."""
+        skill = (
+            Path(__file__).resolve().parents[1] / "agent_home/skills/retirement-readiness/SKILL.md"
+        ).read_text(encoding="utf-8")
+        result = call(
+            withdrawal_plan_tool,
+            portfolio_value=200_000,
+            annual_withdrawal=80_000,
+            years=30,
+            annual_return=0.05,
+            retirement_age=65,
+        )
+        assert "`depleted_by_age`" in skill
+        assert "depleted_by_age" in result
+        assert "`age`" in skill
+        assert "age" in result["yearly_path"][0]
 
     def test_the_retirement_skill_simulates_on_the_balanced_pair(self):
         """The skill's pair is the prompt's balanced default, so a

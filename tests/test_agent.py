@@ -438,6 +438,7 @@ class TestTheArithmeticRuleNamesTheFigureTools:
         assert "If you describe how much a holding swings" in text
         assert "If you give a chance that savings last or run out" in text
         assert "If you give an age by which the money ran out" in text
+        assert "pass `retirement_age` and quote the `_by_age` field" in text
 
     def test_a_probability_is_never_reworded_by_the_model(self) -> None:
         """Turning a 0.81 success into "a 19% chance of running out" is a

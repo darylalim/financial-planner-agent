@@ -513,6 +513,26 @@ def _withdrawal_figures(portfolio_value: float, annual_withdrawal: float) -> dic
     }
 
 
+_MAX_RETIREMENT_AGE = 120
+
+
+def _check_retirement_age(retirement_age: int | None) -> None:
+    if retirement_age is not None and not 0 <= retirement_age <= _MAX_RETIREMENT_AGE:
+        raise ValueError(
+            f"retirement_age must be in [0, {_MAX_RETIREMENT_AGE}], got {retirement_age}"
+        )
+
+
+def _age_after(retirement_age: int, year: int | None) -> int | None:
+    """The age at the end of a drawdown year, or ``None`` for a year that never came.
+
+    Both drawdown tools answer in ages through this, because the answer's reader
+    thinks in ages and the checker sees only ``$`` and ``%``: an age the model
+    worked out for itself would pass unchecked.
+    """
+    return None if year is None else retirement_age + year
+
+
 def _draw_down(
     *,
     portfolio_value: float,
@@ -553,6 +573,7 @@ def withdrawal_sustainability(
     annual_withdrawal: float | None = None,
     monthly_withdrawal: float | None = None,
     annual_inflation: float = 0.025,
+    retirement_age: int | None = None,
 ) -> dict:
     """Test whether a portfolio survives a given inflation-adjusted drawdown.
 
@@ -564,7 +585,8 @@ def withdrawal_sustainability(
     gives the probability.
 
     Takes the first-year withdrawal as exactly one of ``annual_withdrawal`` or
-    ``monthly_withdrawal``, and returns both.
+    ``monthly_withdrawal``, and returns both. Given ``retirement_age``, every
+    year it reports also comes back as an age.
     """
     annual = _first_year_withdrawal(
         portfolio_value=portfolio_value,
@@ -574,30 +596,38 @@ def withdrawal_sustainability(
         monthly_withdrawal=monthly_withdrawal,
         annual_inflation=annual_inflation,
     )
+    _check_retirement_age(retirement_age)
     balances, depleted_year = _draw_down(
         portfolio_value=portfolio_value,
         first_year_withdrawal=annual,
         annual_inflation=annual_inflation,
         growth_factors=[1.0 + annual_return] * years,
     )
+    yearly_path: list[dict] = [
+        {"year": year, "balance": whole_dollars(balance)}
+        for year, balance in enumerate(balances, start=1)
+    ]
+    ages: dict = {}
+    if retirement_age is not None:
+        ages = {
+            "horizon_end_age": _age_after(retirement_age, years),
+            "depleted_by_age": _age_after(retirement_age, depleted_year),
+        }
+        for row in yearly_path:
+            row["age"] = _age_after(retirement_age, row["year"])
     return {
         "survives_horizon": depleted_year is None,
         "depleted_in_year": depleted_year,
+        **ages,
         "ending_balance": whole_dollars(balances[-1]),
         **_withdrawal_figures(portfolio_value, annual),
-        "yearly_path": [
-            {"year": year, "balance": whole_dollars(balance)}
-            for year, balance in enumerate(balances, start=1)
-        ],
+        "yearly_path": yearly_path,
         "caveat": (
             "Deterministic single-path projection. Ignores sequence-of-returns "
             "risk and market volatility; simulate_withdrawal_plan gives a "
             "probability of success."
         ),
     }
-
-
-_MAX_RETIREMENT_AGE = 120
 
 
 def _log_sigma(median_factor: float, volatility: float) -> float:
@@ -658,10 +688,7 @@ def simulate_withdrawal(
     _check_rate("annual_volatility", annual_volatility)
     if annual_return <= -1.0:
         raise ValueError("annual_return must be above -1.0 (a total loss every year)")
-    if retirement_age is not None and not 0 <= retirement_age <= _MAX_RETIREMENT_AGE:
-        raise ValueError(
-            f"retirement_age must be in [0, {_MAX_RETIREMENT_AGE}], got {retirement_age}"
-        )
+    _check_retirement_age(retirement_age)
     if paths < 1:
         raise ValueError(f"paths must be at least 1, got {paths}")
 
@@ -713,14 +740,10 @@ def simulate_withdrawal(
         "worst_25_percent_depleted_by_year": worst_25,
     }
     if retirement_age is not None:
-        # The age at the end of that year: the drawdown starts at retirement_age.
-        def age(year: int | None) -> int | None:
-            return None if year is None else retirement_age + year
-
         result |= {
-            "horizon_end_age": age(years),
-            "worst_10_percent_depleted_by_age": age(worst_10),
-            "worst_25_percent_depleted_by_age": age(worst_25),
+            "horizon_end_age": _age_after(retirement_age, years),
+            "worst_10_percent_depleted_by_age": _age_after(retirement_age, worst_10),
+            "worst_25_percent_depleted_by_age": _age_after(retirement_age, worst_25),
         }
     return result | {
         **_withdrawal_figures(portfolio_value, annual),
