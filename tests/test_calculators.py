@@ -514,6 +514,15 @@ class TestEstimatesAreWholeDollars:
         assert "increase_over_current" in skill
         assert "increase_over_current" in required_savings_rate.description
 
+    def test_the_retirement_skill_names_the_drawdown_return(self):
+        """Unnamed, the model chose: one live run took 7% into retirement and turned
+        "runs out by 87" into "lasts to 95", without saying so."""
+        skill = (
+            Path(__file__).resolve().parents[1] / "agent_home/skills/retirement-readiness/SKILL.md"
+        ).read_text(encoding="utf-8")
+        step_3 = skill.split("### 3.")[1].split("### 4.")[0]
+        assert f"`annual_return` {prompts.BALANCED_RETURN_PERCENT / 100}" in step_3
+
     def test_the_retirement_skill_simulates_on_fields_the_tool_returns(self):
         """A skill that names a figure must name a field that returns it."""
         skill = (
