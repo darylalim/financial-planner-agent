@@ -58,6 +58,9 @@ Take `final_balance_nominal` from step 2 into `test_withdrawal_plan`:
   today's-dollar spending; that error overstates readiness by decades of
   inflation.
 - `years` = 95 − retirement age, so the plan survives a long life
+- `retirement_age`, so the answer comes back as ages. If the money runs out,
+  `depleted_by_age` is the age to quote; `yearly_path` carries an `age` on
+  every row. Never add years to an age yourself
 
 ### 4. Simulate the drawdown
 

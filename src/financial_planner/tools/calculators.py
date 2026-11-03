@@ -184,6 +184,7 @@ def test_withdrawal_plan(
     annual_withdrawal: float | None = None,
     monthly_withdrawal: float | None = None,
     annual_inflation: float = 0.025,
+    retirement_age: int | None = None,
 ) -> str:
     """Test whether a portfolio survives a given inflation-adjusted drawdown.
 
@@ -205,11 +206,15 @@ def test_withdrawal_plan(
         monthly_withdrawal: First-year withdrawal per month, in dollars. Pass a
             monthly figure as is -- do not multiply it by 12 yourself.
         annual_inflation: Annual inflation as a decimal. Defaults to 0.025.
+        retirement_age: Age at the start of the drawdown. Optional; give it and
+            years are also returned as ages.
 
     Returns:
         JSON with survives_horizon, depleted_in_year, ending_balance,
         initial_withdrawal_rate, the first-year withdrawal both annually and
-        monthly, a yearly path, and a caveat to relay.
+        monthly, a yearly path, and a caveat to relay. Given retirement_age,
+        also depleted_by_age (null if the money lasts), horizon_end_age, and an
+        age on each row of the yearly path.
     """
     try:
         return ok(
@@ -220,6 +225,7 @@ def test_withdrawal_plan(
                 annual_withdrawal=annual_withdrawal,
                 monthly_withdrawal=monthly_withdrawal,
                 annual_inflation=annual_inflation,
+                retirement_age=retirement_age,
             )
         )
     except Exception as exc:  # noqa: BLE001

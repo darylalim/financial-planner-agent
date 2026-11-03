@@ -251,6 +251,65 @@ class TestWithdrawalSustainability:
         assert result["depleted_in_year"] is not None
         assert result["ending_balance"] == 0.0
 
+    def test_ages_are_returned_so_the_model_never_adds_them(self):
+        """The checker sees only $ and %, so "runs out around age 83" worked
+        out from depleted_in_year would pass it unchecked."""
+        result = withdrawal_sustainability(
+            portfolio_value=500_000,
+            annual_withdrawal=100_000,
+            years=30,
+            annual_return=0.05,
+            retirement_age=65,
+        )
+        assert result["horizon_end_age"] == 95
+        assert result["depleted_by_age"] == 65 + result["depleted_in_year"]
+        assert result["yearly_path"][0]["age"] == 66
+        assert result["yearly_path"][-1]["age"] == 95
+
+    def test_a_plan_that_lasts_has_no_depletion_age(self):
+        result = withdrawal_sustainability(
+            portfolio_value=1_000_000,
+            annual_withdrawal=35_000,
+            years=30,
+            annual_return=0.06,
+            retirement_age=65,
+        )
+        assert result["depleted_by_age"] is None
+        assert result["horizon_end_age"] == 95
+
+    def test_without_a_retirement_age_there_are_no_ages(self):
+        result = withdrawal_sustainability(
+            portfolio_value=500_000, annual_withdrawal=100_000, years=30, annual_return=0.05
+        )
+        assert not [key for key in result if "age" in key.split("_")]
+        assert "age" not in result["yearly_path"][0]
+
+    @pytest.mark.parametrize("retirement_age", [-1, 121])
+    def test_an_impossible_retirement_age_is_rejected(self, retirement_age):
+        with pytest.raises(ValueError, match="retirement_age"):
+            withdrawal_sustainability(
+                portfolio_value=500_000,
+                annual_withdrawal=100_000,
+                years=30,
+                annual_return=0.05,
+                retirement_age=retirement_age,
+            )
+
+    def test_both_drawdown_tools_give_the_same_age(self):
+        """With no volatility every simulated path is the single one, so the
+        two tools must name the same age for the same plan."""
+        plan = {
+            "portfolio_value": 500_000,
+            "annual_withdrawal": 100_000,
+            "years": 30,
+            "annual_return": 0.05,
+            "retirement_age": 65,
+        }
+        single = withdrawal_sustainability(**plan)
+        simulated = simulate_withdrawal(**plan, annual_volatility=0.0, seed=1, paths=10)
+        assert simulated["worst_10_percent_depleted_by_age"] == single["depleted_by_age"]
+        assert simulated["horizon_end_age"] == single["horizon_end_age"]
+
     def test_reports_initial_withdrawal_rate(self):
         result = withdrawal_sustainability(
             portfolio_value=1_000_000, annual_withdrawal=40_000, years=30, annual_return=0.06
