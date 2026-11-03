@@ -57,6 +57,10 @@ Take `final_balance_nominal` from step 2 into `test_withdrawal_plan`:
   `final_balance_real` and today's spending. Never mix a nominal balance with
   today's-dollar spending; that error overstates readiness by decades of
   inflation.
+- `annual_return` 0.05, the balanced return from your assumptions, on every
+  drawdown, the 7% projection's included: 7% is a return for the saving years.
+  If the user named their own retirement return, use that. Either way, say
+  which return the drawdown used
 - `years` = 95 − retirement age, so the plan survives a long life
 - `retirement_age`, so the answer comes back as ages. If the money runs out,
   `depleted_by_age` is the age to quote; `yearly_path` carries an `age` on
